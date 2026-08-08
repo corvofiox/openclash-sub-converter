@@ -12,9 +12,11 @@ rm -rf $WORK && mkdir -p $WORK
 
 cleanup() {
   [ -n "$SRV_PID" ] && kill $SRV_PID 2>/dev/null
+  [ -n "$TOK_PID" ] && kill $TOK_PID 2>/dev/null
   [ -n "$HTTP_PID" ] && kill $HTTP_PID 2>/dev/null
-  # go run 孤儿子进程
+  # go run 孤儿子进程（进程可能已退出，先判断 cmdline 可读再读，避免竞态警告）
   for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+    [ -r /proc/$pid/cmdline ] || continue
     cmdline=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null | head -c 100)
     echo "$cmdline" | grep -q "go-build.*/server" && kill -9 $pid 2>/dev/null || true
   done
@@ -39,7 +41,7 @@ HTTP_PID=$!
 sleep 1
 
 # 3. 起转换服务（健康检查轮询替代固定 sleep）
-export OSC_PORT=$SRV_PORT OSC_LOG_LEVEL=info
+export OSC_PORT=$SRV_PORT OSC_LOG_LEVEL=info OSC_DATA_DIR=$WORK/data
 go run ./cmd/server >$WORK/server.log 2>&1 &
 SRV_PID=$!
 for i in $(seq 1 30); do
@@ -87,7 +89,60 @@ check "全部源失败 502" "502" "$(curl -s -o /dev/null -w '%{http_code}' "htt
 check "healthz" "ok" "$(curl -s "http://127.0.0.1:$SRV_PORT/healthz")"
 check "version" "1" "$(curl -s "http://127.0.0.1:$SRV_PORT/version" | grep -c mihomo)"
 
-# 7. mihomo 全量校验产物
+# 6.5 P1-1 回归：前端生成订阅链接用 URLSearchParams 单次编码（不预编码），
+# 生成链接必须 200——双重编码曾导致 100% 400
+QSTR=$(python3 -c "import urllib.parse,sys;print(urllib.parse.urlencode({'target':'clash','url':sys.argv[1]}))" "$SUB_URL")
+check "前端链接(URLSearchParams 单次编码) /sub 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SRV_PORT/sub?$QSTR")"
+
+# 7. 管理台 API 全链路（webui 页面 + 订阅源 CRUD + 转换 + 日志 + 重试）
+check "管理台首页 HTML 含标题" "1" "$(curl -s http://127.0.0.1:$SRV_PORT/ | grep -c '<h1>订阅转换管理台</h1>')"
+check "管理台静态资源 app.js" "200" "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$SRV_PORT/app.js)"
+check "sources 空列表" "1" "$(curl -s http://127.0.0.1:$SRV_PORT/api/v1/sources | grep -c '\"sources\":\[\]')"
+CREATE_CODE=$(curl -s -o $WORK/create.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"冒烟源\",\"url\":\"$SUB_URL\",\"enabled\":true}" \
+  http://127.0.0.1:$SRV_PORT/api/v1/sources)
+check "创建订阅源 201" "201" "$CREATE_CODE"
+SRC_ID=$(python3 -c 'import json;print(json.load(open("'$WORK'/create.json"))["source"]["id"])')
+[ -n "$SRC_ID" ] && check "创建返回含 id" "1" "1" || check "创建返回含 id" "1" "0"
+check "更新订阅源 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+  -d '{"name":"冒烟源改名"}' http://127.0.0.1:$SRV_PORT/api/v1/sources/$SRC_ID)"
+PREVIEW=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d "{\"source_id\":\"$SRC_ID\"}" http://127.0.0.1:$SRV_PORT/api/v1/convert/preview)
+check "preview node_count>0" "1" "$(echo "$PREVIEW" | python3 -c 'import json,sys;print(1 if json.load(sys.stdin)["node_count"]>0 else 0)')"
+RUNY=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d "{\"source_id\":\"$SRC_ID\"}" http://127.0.0.1:$SRV_PORT/api/v1/convert/run)
+check "run yaml 含 proxies" "1" "$(echo "$RUNY" | python3 -c 'import json,sys;print(1 if "proxies:" in json.load(sys.stdin)["yaml"] else 0)')"
+check "logs ≥2 条" "1" "$(curl -s 'http://127.0.0.1:'$SRV_PORT'/api/v1/logs?limit=50' | python3 -c 'import json,sys;print(1 if len(json.load(sys.stdin)["logs"])>=2 else 0)')"
+LOG_ID=$(curl -s 'http://127.0.0.1:'$SRV_PORT'/api/v1/logs?limit=1' | python3 -c 'import json,sys;print(json.load(sys.stdin)["logs"][0]["id"])')
+check "log retry 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  http://127.0.0.1:$SRV_PORT/api/v1/logs/$LOG_ID/retry)"
+check "sub src=ID 200" "200" "$(curl -s -o $WORK/out_src.yaml -w '%{http_code}' \
+  "http://127.0.0.1:$SRV_PORT/sub?target=clash&src=$SRC_ID")"
+check "sub src=ID 节点数 7" "7" "$(NODES $WORK/out_src.yaml)"
+check "BUG回归 url=notaurl 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' \
+  'http://127.0.0.1:'$SRV_PORT'/sub?target=clash&url=notaurl')"
+
+# 7.5 P3-17g OSC_ADMIN_TOKEN 场景：管理 API 需令牌；页面/静态资源/sub 不鉴权
+TOK_PORT=$((SRV_PORT + 1))
+OSC_PORT=$TOK_PORT OSC_DATA_DIR=$WORK/data_tok OSC_ADMIN_TOKEN=s3cret \
+  go run ./cmd/server >$WORK/server_tok.log 2>&1 &
+TOK_PID=$!
+for i in $(seq 1 30); do
+  if curl -s -m 1 "http://127.0.0.1:$TOK_PORT/healthz" 2>/dev/null | grep -q ok; then
+    break
+  fi
+  sleep 1
+done
+if ! curl -s -m 1 "http://127.0.0.1:$TOK_PORT/healthz" | grep -q ok; then
+  echo "token 服务 30s 未就绪"; cat $WORK/server_tok.log; exit 1
+fi
+check "token: / 页面无 token 200（页面不鉴权）" "200" "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$TOK_PORT/)"
+check "token: /app.js 无 token 200（静态资源不鉴权）" "200" "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$TOK_PORT/app.js)"
+check "token: /api/v1/sources 无 token 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$TOK_PORT/api/v1/sources)"
+check "token: /api/v1/sources 带 X-Token 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/sources)"
+check "token: /sub 无 token 不 401（参数错误 400）" "400" "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:'$TOK_PORT'/sub?target=clash')"
+
+# 8. mihomo 全量校验产物
 mkdir -p cmd/validate_tmp
 cat > cmd/validate_tmp/main.go <<EOF
 package main

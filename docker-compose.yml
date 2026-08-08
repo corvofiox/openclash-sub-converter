@@ -8,8 +8,12 @@ services:
     environment:
       - OSC_PORT=25500
       - OSC_LOG_LEVEL=info
+      # 管理台访问令牌（X-Token）。设置后管理台页面与 /api/v1 需携带令牌，
+      # /sub 转换端点不受影响；NAS 内网默认留空（不启用鉴权）。
+      - OSC_ADMIN_TOKEN=
     volumes:
       - ./config:/app/config:ro
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:25500/healthz"]
       interval: 30s

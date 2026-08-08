@@ -15,6 +15,7 @@ import (
 	"github.com/yangyu/openclash-sub-converter/internal/api"
 	"github.com/yangyu/openclash-sub-converter/internal/config"
 	"github.com/yangyu/openclash-sub-converter/internal/fetcher"
+	"github.com/yangyu/openclash-sub-converter/internal/store"
 )
 
 func main() {
@@ -27,10 +28,18 @@ func main() {
 	cfg.ApplyEnv()
 	setupLogger(cfg.Logging.Level)
 
+	// 管理台数据层：数据目录创建失败属环境问题（磁盘只读/权限不足等），
+	// 直接退出并给出明确消息，避免服务跑起来却无法持久化。
+	st, err := store.New(cfg.Server.DataDir)
+	if err != nil {
+		slog.Error("init store failed", "data_dir", cfg.Server.DataDir, "error", err)
+		os.Exit(1)
+	}
+
 	f := fetcher.New(cfg.Fetcher)
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler: api.NewServer(cfg, f),
+		Handler: api.NewServer(cfg, f, st),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

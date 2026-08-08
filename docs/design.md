@@ -222,3 +222,108 @@ services:
 - ❌ 出站代理拉取订阅源（M2，需凭据决策）
 - ❌ Surge/QuanX 等目标格式
 - ❌ 鉴权（M3 随 Web 界面）
+
+---
+
+# M3 Web 管理台（实现方案）
+
+> 决策记录：同端口同 Handler 挂载（不引入独立管理端口/进程）+ `go:embed` 内嵌
+> 原生 HTML/CSS/JS 单页（零外部依赖）+ JSON 文件持久化（`internal/store`）。
+> 2026-08-09 落地。
+
+## M3-1 架构
+
+```
+浏览器（管理台单页，5 个 Tab）
+  │  fetch /api/v1/*（带 X-Token）
+  ▼
+api.NewServer（同一 25500 端口）
+  ├─ GET /sub、/healthz、/version    —— 永不鉴权（OpenClash 侧拉取用）
+  ├─ /api/v1/*  ── authMiddleware ── store CRUD / convert / logs
+  └─ /          ── webui.Handler()（go:embed 静态资源，不鉴权）
+```
+
+- **同端口同 Handler**：管理台与转换接口共用 25500 端口与进程，避免多端口暴露面；
+  `cmd/server` 单进程无内部通信。
+- **`go:embed`**：`internal/webui` 把 `static/`（index.html + style.css + app.js，
+  合计 <60KB）编进二进制；`fs.Sub` 切根到 `static/` 后交给 `http.FileServer`，
+  路径 `/` 自动命中 index.html，资源以 `/app.js` 相对根引用（不用 StripPrefix）。
+  前端零框架、零 CDN、零外链，离线可用。
+- **ServeMux 优先级**：Go 1.22+ mux 精确路径优先，`/` 兜底路由不影响已注册的
+  `/sub`、`/healthz`、`/version`；未命中静态路径（如 /favicon.ico）由 FileServer
+  返回 404；未匹配的 `/api/v1/*` 子路径返回 JSON 404。
+- **页面不鉴权**：`/` 与静态资源不进 authMiddleware——页面本身无敏感数据（数据
+  全在 `/api/v1/*`），且浏览器导航无法携带令牌头，若页面被挡在 401 后管理台
+  将完全不可达（死锁）。API 的 401 由前端 `apiFetch` 弹令牌框兜底。
+- **数据层**：`internal/store` 三组 JSON（sources/logs/templates.json）落盘在
+  `server.data_dir`（默认 `./data`，env `OSC_DATA_DIR` 覆盖）；原子写
+  （临时文件 + fsync + rename）+ 写锁，崩溃不产生半成品文件。
+
+## M3-2 端点清单（/api/v1，全部经 authMiddleware）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/v1/sources | 订阅源列表（URL 脱敏） |
+| POST / PUT / DELETE | /api/v1/sources[/{id}] | 订阅源 CRUD（PUT 为部分更新，URL 留空不变） |
+| POST | /api/v1/convert/preview | 转换预览：返回 nodes（name/type）+ groups + 耗时，不渲染 YAML |
+| POST | /api/v1/convert/run | 完整转换：返回渲染后 YAML + node_count + 耗时 |
+| GET | /api/v1/logs?limit= | 转换日志（时间倒序，上限 200 条环形） |
+| POST | /api/v1/logs/{id}/retry | 用日志记录源与参数重跑 preview 管线 |
+| GET/POST/PUT/DELETE | /api/v1/templates[/{id}] | 规则模板 CRUD（behavior: domain/ipcidr/classical，format: yaml/text） |
+| GET | /api/v1/version | 版本信息（同公开 /version，但需鉴权） |
+
+- convert 请求体：`source_id` 与 `url`（临时，可 `|` 多源）二选一，`source_id`
+  优先；`include/exclude/rename` 正则、`udp/tls13/scv` 布尔、`template_id`
+  可选。规则模板注入 = 把模板 URL 写进输出 YAML 的 `rule-providers`，规则集
+  由 OpenClash 侧拉取，本服务不拉取不校验规则内容。
+- 日志响应剔除 `url_full`（完整临时 URL 仅内部 retry 使用，永不外泄）。
+
+## M3-3 前端（internal/webui/static）
+
+单页 5 个 Tab + 顶部栏（标题 / GET /version 版本号 / 鉴权状态徽标）：
+
+1. **订阅源**：表格（名称/脱敏 URL/启用开关/编辑/删除，删除需 confirm()）；
+   新增/编辑共用内联表单，编辑时 URL 留空表示不变（列表只回脱敏 URL）；
+   启用开关 change 即 PUT。
+2. **订阅转换**：已启用源下拉（或「临时 URL」折叠展开时禁用下拉）；
+   include/exclude/rename + scv/udp/tls13 + 模板下拉；「预览节点」渲染节点/
+   策略组滚动区与耗时；「生成订阅链接」用 `window.location.protocol` +
+   `window.location.host` 拼 `/sub?target=clash&src=<id>|url=<enc>`（url 只经
+   URLSearchParams 单次编码，绝不预编码，否则服务端解码后仍带 %XX → 400）
+   供 OpenClash 填订阅地址，一键复制；
+   「查看完整 YAML」输出 textarea + 复制。
+3. **转换日志**：时间/来源/参数摘要（include/exclude/rename 有值才显示）/
+   状态/错误消息/节点数/耗时；失败行红色 +「重试」（POST retry 成功即刷新）。
+4. **规则模板**：表格 + CRUD 表单（behavior/format 下拉），说明文字注明
+   「OpenClash 侧拉取规则集，本服务仅注入 URL 到输出 YAML 的 rule-providers」。
+5. **认证**：令牌输入/清除；所有请求走统一 `apiFetch`：localStorage
+   `osc_token` → `X-Token` 头；收到 401 弹令牌输入框，保存后自动重试原请求
+   （连续 401 ≥2 次停止弹窗，防 token 错误时无限递归；弹窗前先关旧弹窗）。
+
+## M3-4 数据文件
+
+`<data_dir>/{sources,logs,templates}.json`，格式 `{"version":1,"<name>":[...]}`；
+version 不匹配视为空态（warn），损坏文件备份为 `.json.bak` 后以空态继续——
+均不崩溃。Docker 部署时 `./data:/app/data` 挂载持久化。
+
+## M3-5 认证
+
+- 令牌来自 env `OSC_ADMIN_TOKEN`（不读配置文件，避免随配置分发泄露）；
+  空串 = 不鉴权（内网默认）。
+- 中间件要求 `X-Token` 或 `Authorization: Bearer <token>`，常量时间比较
+  （crypto/subtle，scheme 大小写不敏感），失败 401。
+- 仅 `/api/v1/*` 受保护；`/` 页面与静态资源、`/sub`、`/healthz`、`/version`
+  保持公开（页面无敏感数据且浏览器导航无法携带令牌头；OpenClash 拉订阅
+  不携带令牌）。
+
+## M3-6 已知限制
+
+- **SSRF**：`/sub?url=` 与管理台临时 URL 允许任意 http/https 目标（同 M2 决策），
+  内网地址也可被拉取；管理台本身有鉴权可设，但 `/sub` 公开。
+- **令牌默认不设**：NAS 内网默认 `OSC_ADMIN_TOKEN` 留空即无鉴权，生产外网
+  暴露需自行设置。
+- **多实例不支持**：JSON 文件无跨进程锁/同步，多副本部署会互相覆盖；数据
+  目录须独占。
+- 日志上限 200 条环形淘汰；retry 只对 source_id 或临时 URL 的日志可用
+  （URLFull 为空且源被删/禁用时 409/400）。
+- 前端无浏览器侧路由刷新（单页 + Tab 切换），刷新回到订阅源页。

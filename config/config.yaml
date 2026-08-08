@@ -4,6 +4,8 @@
 
 server:
   port: 25500          # HTTP 监听端口
+  data_dir: ./data     # 管理台数据持久化目录（订阅源/转换日志/规则模板 JSON），
+                       # 可用环境变量 OSC_DATA_DIR 覆盖
 
 fetcher:
   user_agent: "clash-verge/v2.0.0"  # 拉取订阅源时携带的 UA（部分机场校验 UA）

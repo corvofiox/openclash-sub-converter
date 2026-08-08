@@ -17,6 +17,7 @@ const (
 	DefaultCacheTTLSec = 300
 	DefaultMaxBytes    = 10 * 1024 * 1024 // 10MB
 	DefaultLogLevel    = "info"
+	DefaultDataDir     = "./data"
 )
 
 // Config 是服务根配置。
@@ -24,11 +25,18 @@ type Config struct {
 	Server  ServerConfig  `yaml:"server"`
 	Fetcher FetcherConfig `yaml:"fetcher"`
 	Logging LoggingConfig `yaml:"logging"`
+	// AdminToken 是管理台 API 的访问令牌，通过请求头 X-Token 或
+	// Authorization: Bearer 携带。安全约定：仅通过环境变量 OSC_ADMIN_TOKEN
+	// 注入，不读配置文件（yaml:"-"），避免令牌随配置文件分发泄露。
+	// 空串表示不启用鉴权。
+	AdminToken string `yaml:"-"`
 }
 
 // ServerConfig 是 HTTP 服务配置。
 type ServerConfig struct {
 	Port int `yaml:"port"`
+	// DataDir 是 Web 管理台数据（订阅源/日志/模板）的持久化目录。
+	DataDir string `yaml:"data_dir"`
 }
 
 // FetcherConfig 是订阅源拉取配置。
@@ -47,7 +55,7 @@ type LoggingConfig struct {
 // Default 返回全默认配置。
 func Default() *Config {
 	return &Config{
-		Server: ServerConfig{Port: DefaultPort},
+		Server: ServerConfig{Port: DefaultPort, DataDir: DefaultDataDir},
 		Fetcher: FetcherConfig{
 			UserAgent:       DefaultUserAgent,
 			TimeoutSeconds:  DefaultTimeoutSec,
@@ -87,6 +95,9 @@ func (c *Config) mergeDefaults() {
 	if c.Server.Port == 0 {
 		c.Server.Port = d.Server.Port
 	}
+	if c.Server.DataDir == "" {
+		c.Server.DataDir = d.Server.DataDir
+	}
 	if c.Fetcher.UserAgent == "" {
 		c.Fetcher.UserAgent = d.Fetcher.UserAgent
 	}
@@ -116,13 +127,20 @@ func (c *Config) validate() error {
 }
 
 // ApplyEnv 用环境变量覆盖配置（12-factor，Docker 用）：
-// OSC_PORT / OSC_FETCHER_UA / OSC_CACHE_TTL / OSC_LOG_LEVEL。
+// OSC_PORT / OSC_FETCHER_UA / OSC_CACHE_TTL / OSC_LOG_LEVEL / OSC_DATA_DIR /
+// OSC_ADMIN_TOKEN。
 // 数值解析失败的环境变量被忽略（保持原值）。
 func (c *Config) ApplyEnv() {
 	if v := os.Getenv("OSC_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Server.Port = n
 		}
+	}
+	if v := os.Getenv("OSC_DATA_DIR"); v != "" {
+		c.Server.DataDir = v
+	}
+	if v := os.Getenv("OSC_ADMIN_TOKEN"); v != "" {
+		c.AdminToken = v
 	}
 	if v := os.Getenv("OSC_FETCHER_UA"); v != "" {
 		c.Fetcher.UserAgent = v

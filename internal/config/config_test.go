@@ -31,6 +31,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Logging.Level != DefaultLogLevel {
 		t.Errorf("level = %q, want %q", cfg.Logging.Level, DefaultLogLevel)
 	}
+	if cfg.Server.DataDir != DefaultDataDir {
+		t.Errorf("data_dir = %q, want %q", cfg.Server.DataDir, DefaultDataDir)
+	}
+	if cfg.AdminToken != "" {
+		t.Errorf("admin_token = %q, want empty (env only)", cfg.AdminToken)
+	}
 }
 
 func TestLoadYAMLMerge(t *testing.T) {
@@ -147,6 +153,8 @@ func TestApplyEnv(t *testing.T) {
 	t.Setenv("OSC_FETCHER_UA", "custom-ua/9.9")
 	t.Setenv("OSC_CACHE_TTL", "42")
 	t.Setenv("OSC_LOG_LEVEL", "debug")
+	t.Setenv("OSC_DATA_DIR", "/var/lib/osc")
+	t.Setenv("OSC_ADMIN_TOKEN", "s3cret-token")
 	cfg := Default()
 	cfg.ApplyEnv()
 	if cfg.Server.Port != 9999 {
@@ -160,6 +168,12 @@ func TestApplyEnv(t *testing.T) {
 	}
 	if cfg.Logging.Level != "debug" {
 		t.Errorf("level = %q, want debug", cfg.Logging.Level)
+	}
+	if cfg.Server.DataDir != "/var/lib/osc" {
+		t.Errorf("data_dir = %q, want /var/lib/osc", cfg.Server.DataDir)
+	}
+	if cfg.AdminToken != "s3cret-token" {
+		t.Errorf("admin_token = %q, want s3cret-token", cfg.AdminToken)
 	}
 }
 

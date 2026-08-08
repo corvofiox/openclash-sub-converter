@@ -2,10 +2,17 @@
 package transform
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 )
+
+// ErrInvalidRegex 标识过滤/重命名参数中的客户端错误：include/exclude 正则
+// 编译失败、rename 规则格式非法或 rename 正则编译失败。API 层用
+// errors.Is(err, ErrInvalidRegex) 将这类错误映射为 HTTP 400（参数错误），
+// 其余管线错误保持 500。
+var ErrInvalidRegex = errors.New("invalid regex")
 
 // Filter 描述对节点列表的过滤/重命名规则。
 type Filter struct {
@@ -28,13 +35,13 @@ func Apply(nodes []map[string]any, f Filter) ([]map[string]any, error) {
 	if f.Exclude != "" {
 		excludeRe, err = regexp.Compile(f.Exclude)
 		if err != nil {
-			return nil, fmt.Errorf("invalid exclude regex %q: %w", f.Exclude, err)
+			return nil, fmt.Errorf("invalid exclude regex %q: %w: %w", f.Exclude, err, ErrInvalidRegex)
 		}
 	}
 	if f.Include != "" {
 		includeRe, err = regexp.Compile(f.Include)
 		if err != nil {
-			return nil, fmt.Errorf("invalid include regex %q: %w", f.Include, err)
+			return nil, fmt.Errorf("invalid include regex %q: %w: %w", f.Include, err, ErrInvalidRegex)
 		}
 	}
 
@@ -44,11 +51,11 @@ func Apply(nodes []map[string]any, f Filter) ([]map[string]any, error) {
 	if f.Rename != "" {
 		idx := strings.Index(f.Rename, "/")
 		if idx < 0 {
-			return nil, fmt.Errorf("invalid rename rule %q: expected format <regex>/<replacement>", f.Rename)
+			return nil, fmt.Errorf("invalid rename rule %q: expected format <regex>/<replacement>: %w", f.Rename, ErrInvalidRegex)
 		}
 		renameRe, err = regexp.Compile(f.Rename[:idx])
 		if err != nil {
-			return nil, fmt.Errorf("invalid rename regex %q: %w", f.Rename[:idx], err)
+			return nil, fmt.Errorf("invalid rename regex %q: %w: %w", f.Rename[:idx], err, ErrInvalidRegex)
 		}
 		renameRepl = f.Rename[idx+1:]
 	}

@@ -15,13 +15,44 @@ import (
 
 	"github.com/yangyu/openclash-sub-converter/internal/config"
 	"github.com/yangyu/openclash-sub-converter/internal/fetcher"
+	"github.com/yangyu/openclash-sub-converter/internal/store"
 )
 
-// newTestServer 构建被测 handler。
+// newTestServer 构建被测 handler（挂载真实 store，数据落在 t.TempDir()）。
 func newTestServer(t *testing.T) http.Handler {
+	t.Helper()
+	h, _ := newTestServerWithStore(t)
+	return h
+}
+
+// newTestServerWithStore 构建 handler 并返回 store，供测试直接操作数据层。
+func newTestServerWithStore(t *testing.T) (http.Handler, *store.Store) {
+	t.Helper()
+	cfg := config.Default()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	return NewServer(cfg, fetcher.New(cfg.Fetcher), st), st
+}
+
+// newTestServerNoStore 构建不挂载 store 的 handler（验证 /api/v1 不注册）。
+func newTestServerNoStore(t *testing.T) http.Handler {
 	t.Helper()
 	cfg := config.Default()
 	return NewServer(cfg, fetcher.New(cfg.Fetcher))
+}
+
+// newTestServerWithToken 构建带管理台令牌的 handler。
+func newTestServerWithToken(t *testing.T, token string) http.Handler {
+	t.Helper()
+	cfg := config.Default()
+	cfg.AdminToken = token
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	return NewServer(cfg, fetcher.New(cfg.Fetcher), st)
 }
 
 // captureLogs 将 slog 默认 logger 重定向到 buffer，返回恢复函数。

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>订阅转换管理台</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">⚡</span>
+    <h1>订阅转换管理台</h1>
+    <span id="version" class="version" title="服务版本">…</span>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="sources" class="tab active">订阅源</button>
+    <button data-tab="convert" class="tab">订阅转换</button>
+    <button data-tab="logs" class="tab">转换日志</button>
+    <button data-tab="templates" class="tab">规则模板</button>
+    <button data-tab="auth" class="tab">认证</button>
+  </nav>
+  <div class="auth-status">
+    <span id="authBadge" class="badge badge-unknown">鉴权未知</span>
+  </div>
+</header>
+
+<main>
+  <div id="toast" class="toast hidden"></div>
+  <div id="banner401" class="banner hidden">请求未授权（401）：请到「认证」页填写管理台令牌。</div>
+
+  <!-- ============ 订阅源管理 ============ -->
+  <section id="sec-sources" class="sec active">
+    <div class="sec-head">
+      <h2>订阅源管理</h2>
+      <button id="btnNewSource" class="btn primary">＋ 新增订阅源</button>
+    </div>
+    <form id="sourceForm" class="card form hidden">
+      <h3 id="sourceFormTitle">新增订阅源</h3>
+      <label>名称 <input type="text" id="srcName" placeholder="例如：主力机场" required></label>
+      <label>订阅 URL <input type="text" id="srcUrl" placeholder="https://example.com/sub?token=..." required></label>
+      <label class="inline"><input type="checkbox" id="srcEnabled" checked> 启用</label>
+      <div class="form-actions">
+        <button type="submit" class="btn primary">保存</button>
+        <button type="button" id="btnCancelSource" class="btn">取消</button>
+      </div>
+    </form>
+    <div class="card">
+      <table>
+        <thead><tr><th>名称</th><th>URL</th><th>启用</th><th>操作</th></tr></thead>
+        <tbody id="sourceRows"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 订阅转换 ============ -->
+  <section id="sec-convert" class="sec">
+    <div class="card">
+      <h2>订阅转换</h2>
+      <label>数据源
+        <select id="convSource"><option value="">（加载中…）</option></select>
+      </label>
+      <details id="tempUrlWrap">
+        <summary>或使用临时 URL（展开后禁用上方下拉）</summary>
+        <input type="text" id="convUrl" placeholder="https://example.com/sub?token=...（多源用 | 分隔）">
+      </details>
+      <div class="grid2">
+        <label>include 正则 <input type="text" id="convInclude" placeholder="保留匹配的节点，如 日本"></label>
+        <label>exclude 正则 <input type="text" id="convExclude" placeholder="剔除匹配的节点"></label>
+        <label>rename 正则 <input type="text" id="convRename" placeholder="格式：正则/替换，如 日本/JP"></label>
+        <label>规则模板
+          <select id="convTemplate"><option value="">（不使用）</option></select>
+        </label>
+      </div>
+      <div class="checks">
+        <label class="inline"><input type="checkbox" id="convScv"> scv（skip-cert-verify）</label>
+        <label class="inline"><input type="checkbox" id="convUdp"> udp</label>
+        <label class="inline"><input type="checkbox" id="convTls13"> tls13</label>
+      </div>
+      <div class="form-actions">
+        <button id="btnPreview" class="btn primary">预览节点</button>
+        <button id="btnGenLink" class="btn">生成订阅链接</button>
+        <button id="btnRunYaml" class="btn">查看完整 YAML</button>
+      </div>
+      <div id="convResult" class="hidden">
+        <div class="result-head">
+          <span id="convMeta"></span>
+          <span id="convLinkBox" class="hidden"><code id="convLink"></code><button id="btnCopyLink" class="btn small">复制</button></span>
+        </div>
+        <div id="nodeList" class="node-list"></div>
+        <div id="groupList" class="group-list"></div>
+        <textarea id="yamlBox" class="yaml-box hidden" readonly spellcheck="false"></textarea>
+        <button id="btnCopyYaml" class="btn small hidden">复制 YAML</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 转换日志 ============ -->
+  <section id="sec-logs" class="sec">
+    <div class="sec-head">
+      <h2>转换日志</h2>
+      <button id="btnRefreshLogs" class="btn">刷新</button>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr><th>时间</th><th>来源</th><th>参数摘要</th><th>状态</th><th>错误消息</th><th>节点数</th><th>耗时</th><th>操作</th></tr></thead>
+        <tbody id="logRows"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 规则模板 ============ -->
+  <section id="sec-templates" class="sec">
+    <div class="sec-head">
+      <h2>规则模板</h2>
+      <button id="btnNewTemplate" class="btn primary">＋ 新增模板</button>
+    </div>
+    <p class="hint">OpenClash 侧拉取规则集，本服务仅注入 URL 到输出 YAML 的 rule-providers。</p>
+    <form id="templateForm" class="card form hidden">
+      <h3 id="templateFormTitle">新增模板</h3>
+      <label>名称 <input type="text" id="tplName" placeholder="例如：广告拦截" required></label>
+      <label>规则集 URL <input type="text" id="tplUrl" placeholder="https://example.com/rules.yaml" required></label>
+      <div class="grid2">
+        <label>behavior
+          <select id="tplBehavior">
+            <option value="domain">domain</option>
+            <option value="ipcidr">ipcidr</option>
+            <option value="classical">classical</option>
+          </select>
+        </label>
+        <label>format
+          <select id="tplFormat">
+            <option value="yaml">yaml</option>
+            <option value="text">text</option>
+          </select>
+        </label>
+      </div>
+      <label class="inline"><input type="checkbox" id="tplEnabled" checked> 启用</label>
+      <div class="form-actions">
+        <button type="submit" class="btn primary">保存</button>
+        <button type="button" id="btnCancelTemplate" class="btn">取消</button>
+      </div>
+    </form>
+    <div class="card">
+      <table>
+        <thead><tr><th>名称</th><th>URL</th><th>behavior</th><th>format</th><th>启用</th><th>操作</th></tr></thead>
+        <tbody id="templateRows"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 认证 ============ -->
+  <section id="sec-auth" class="sec">
+    <div class="card">
+      <h2>认证</h2>
+      <p class="hint">管理 API（<code>/api/v1/*</code>）受 <code>OSC_ADMIN_TOKEN</code> 保护（请求头 <code>X-Token</code> 或 <code>Authorization: Bearer</code>）。令牌为空时完全开放（默认内网部署）；页面与 <code>/sub</code> 转换端点不受影响。</p>
+      <label>管理台令牌
+        <input type="password" id="authToken" placeholder="输入后保存到浏览器本地（localStorage）">
+      </label>
+      <div class="form-actions">
+        <button id="btnSaveToken" class="btn primary">保存令牌</button>
+        <button id="btnClearToken" class="btn">清除令牌</button>
+      </div>
+      <p id="authState" class="auth-state"></p>
+    </div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

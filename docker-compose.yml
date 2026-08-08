@@ -1,0 +1,17 @@
+services:
+  openclash-sub-converter:
+    build: .
+    container_name: openclash-sub-converter
+    restart: unless-stopped
+    ports:
+      - "25500:25500"
+    environment:
+      - OSC_PORT=25500
+      - OSC_LOG_LEVEL=info
+    volumes:
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:25500/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -76,6 +76,7 @@ func NewServer(cfg *config.Config, f *fetcher.Fetcher, st ...*store.Store) http.
 		admin.HandleFunc("POST /api/v1/templates", s.handleCreateTemplate)
 		admin.HandleFunc("PUT /api/v1/templates/{id}", s.handleUpdateTemplate)
 		admin.HandleFunc("DELETE /api/v1/templates/{id}", s.handleDeleteTemplate)
+		admin.HandleFunc("POST /api/v1/templates/probe", s.handleProbeTemplate)
 		admin.HandleFunc("GET /api/v1/version", s.handleVersion)
 		// 未匹配的 /api/v1/* 子路径 → JSON 404（避免 Go 默认 text/plain 404）
 		admin.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {

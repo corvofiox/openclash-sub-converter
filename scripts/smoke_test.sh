@@ -149,6 +149,45 @@ check "token: templates 预置种入 ≥8 条" "1" "$TPL_SEEDED"
 TPL_NETFLIX=$(curl -s -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/templates | python3 -c 'import json,sys;print(1 if any("Netflix" in t["url"] for t in json.load(sys.stdin)["templates"]) else 0)')
 check "token: templates 含 Netflix 预置" "1" "$TPL_NETFLIX"
 
+# 7.7 规则模板自动探测（text/domain、yaml 混合、错误路径、鉴权）
+cat > $WORK/rules_domain.list <<'EOF'
+DOMAIN-SUFFIX,example.com
+DOMAIN-SUFFIX,google.com
+DOMAIN-KEYWORD,facebook.com
+DOMAIN,apple.com
+DOMAIN-SUFFIX,netflix.com
+DOMAIN-WILDCARD,*.youtube.com
+DOMAIN-REGEX,^[a-z]+\.cdn$
+EOF
+cat > $WORK/rules_mixed.yaml <<'EOF'
+payload:
+  - DOMAIN-SUFFIX,example.com
+  - IP-CIDR,1.2.3.0/24
+  - DOMAIN-KEYWORD,google.com
+  - GEOIP,CN
+  - DOMAIN,apple.com
+  - IP-CIDR6,2001:db8::/32
+EOF
+PROBE_DOM_CODE=$(curl -s -o $WORK/probe_dom.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" \
+  http://127.0.0.1:$SRV_PORT/api/v1/templates/probe)
+check "probe text/domain 200" "200" "$PROBE_DOM_CODE"
+PROBE_DOM_OK=$(python3 -c 'import json;print(1 if json.load(open("'$WORK'/probe_dom.json"))["format"]=="text" and json.load(open("'$WORK'/probe_dom.json"))["behavior"]=="domain" else 0)')
+check "probe text/domain format=text behavior=domain" "1" "$PROBE_DOM_OK"
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_mixed.yaml\"}" \
+  http://127.0.0.1:$SRV_PORT/api/v1/templates/probe > $WORK/probe_yaml.json
+PROBE_YAML_FMT=$(python3 -c 'import json;print(json.load(open("'$WORK'/probe_yaml.json"))["format"])')
+check "probe yaml format=yaml" "yaml" "$PROBE_YAML_FMT"
+check "probe 非法 URL 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"url":"notaurl"}' http://127.0.0.1:$SRV_PORT/api/v1/templates/probe)"
+check "probe 未监听端口 502" "502" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"url":"http://127.0.0.1:19999/nope"}' http://127.0.0.1:$SRV_PORT/api/v1/templates/probe)"
+check "probe TOK 无 token 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" http://127.0.0.1:$TOK_PORT/api/v1/templates/probe)"
+# #10a: rules_mixed.yaml 混合均匀（3 DOMAIN / 2 IP-CIDR / 1 GEOIP，各 <60%）→ classical
+PROBE_YAML_BEH=$(python3 -c 'import json;print(json.load(open("'$WORK'/probe_yaml.json"))["behavior"])')
+check "probe yaml behavior=classical" "classical" "$PROBE_YAML_BEH"
+# #10b: TOK 实例带正确 token（本实例 OSC_ADMIN_TOKEN=s3cret）探测 200
+check "probe TOK 带正确 token 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Token: s3cret' -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" http://127.0.0.1:$TOK_PORT/api/v1/templates/probe)"
+
 # 8. mihomo 全量校验产物
 mkdir -p cmd/validate_tmp
 cat > cmd/validate_tmp/main.go <<EOF

@@ -3,7 +3,7 @@
 
 const $ = (sel) => document.querySelector(sel);
 const TOKEN_KEY = 'osc_token';
-const state = { editingSourceId: null, editingTemplateId: null };
+const state = { editingSourceId: null, editingTemplateId: null, tplBehavior: null, tplFormat: null };
 
 /* ---------------- 通用工具 ---------------- */
 
@@ -506,8 +506,21 @@ async function loadTemplates() {
   }
 }
 
+// hideProbeResult 隐藏探测预览区并清空内容：探测失败或用户修改 URL 后调用，
+// 防止把过期探测结果当成新结果保存。
+function hideProbeResult() {
+  $('#tplProbeBox').classList.add('hidden');
+  $('#tplProbeReason').textContent = '';
+  $('#tplProbePreview').textContent = '';
+}
+
 function resetTemplateForm() {
   state.editingTemplateId = null;
+  state.tplBehavior = null;
+  state.tplFormat = null;
+  $('#btnProbeTemplate').dataset.probedUrl = '';
+  $('#btnProbeTemplate').dataset.probedBehavior = '';
+  $('#btnProbeTemplate').dataset.probedFormat = '';
   $('#templateFormTitle').textContent = '新增模板';
   $('#tplName').value = '';
   $('#tplUrl').value = '';
@@ -515,6 +528,7 @@ function resetTemplateForm() {
   $('#tplBehavior').value = 'domain';
   $('#tplFormat').value = 'yaml';
   $('#tplEnabled').checked = true;
+  hideProbeResult();
   $('#templateForm').classList.add('hidden');
 }
 
@@ -527,6 +541,30 @@ $('#btnCancelTemplate').onclick = resetTemplateForm;
 
 $('#templateForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const url = $('#tplUrl').value.trim();
+  // 统一判定：表单 URL 与探测时 URL 不一致（含 URL 留空=编辑保持原值、
+  // URL 改成别的两种情况，URL 为空时探测 URL 非空所以必不一致）时，探测
+  // 回填的 behavior/format 不再适用。仅当表单值仍是探测回填值（用户未手
+  // 改，stillProbed）才还原模板原值/清空；用户手改过则尊重其选择，不动。
+  let probeIgnored = false;
+  const probedUrl = $('#btnProbeTemplate').dataset.probedUrl;
+  if (probedUrl && url !== probedUrl) {
+    const b = $('#tplBehavior').value, f = $('#tplFormat').value;
+    const stillProbed = (b === $('#btnProbeTemplate').dataset.probedBehavior &&
+                         f === $('#btnProbeTemplate').dataset.probedFormat);
+    if (stillProbed) {
+      probeIgnored = true;
+      if (state.editingTemplateId) {
+        // 编辑模式：恢复模板原值（state.tplBehavior/tplFormat 编辑加载时已存）
+        $('#tplBehavior').value = state.tplBehavior ?? '';
+        $('#tplFormat').value = state.tplFormat ?? '';
+      } else {
+        // 新建模式：清空让用户重选
+        $('#tplBehavior').value = '';
+        $('#tplFormat').value = '';
+      }
+    }
+  }
   const body = {
     name: $('#tplName').value.trim(),
     behavior: $('#tplBehavior').value,
@@ -534,35 +572,88 @@ $('#templateForm').addEventListener('submit', async (e) => {
     enabled: $('#tplEnabled').checked,
   };
   if (state.editingTemplateId) {
-    if ($('#tplUrl').value.trim()) body.url = $('#tplUrl').value.trim();
+    // 编辑模式 URL 留空 = PUT 不带 url（服务端保持原 URL）
+    if (url) body.url = url;
     try {
       await apiJSON('/api/v1/templates/' + state.editingTemplateId, {
         method: 'PUT', body: JSON.stringify(body),
       });
-      toast('模板已更新');
+      toast(probeIgnored ? '模板已更新（URL 与探测源不一致，已忽略探测结果）' : '模板已更新');
     } catch (err) { toast('更新失败：' + err.message, true); }
   } else {
-    body.url = $('#tplUrl').value.trim();
+    body.url = url;
     if (!body.url) { toast('请填写规则集 URL', true); return; }
     try {
       await apiJSON('/api/v1/templates', { method: 'POST', body: JSON.stringify(body) });
-      toast('模板已创建');
+      toast(probeIgnored ? '模板已创建（URL 已变更，请重新探测或手动选择）' : '模板已创建');
     } catch (err) { toast('创建失败：' + err.message, true); }
   }
   resetTemplateForm();
   loadTemplates();
 });
 
+// 自动探测：新建/编辑表单共用。探测结果只回填表单控件（不写 state），
+// 保存逻辑与 state.editingTemplateId 完全不变；format/behavior 非空才
+// 回填下拉框（空串不动，避免清掉用户已选值），reason/preview 用
+// textContent 赋值（零 XSS）。探测成功把探测 URL 与回填的
+// behavior/format 记到按钮 dataset（probedUrl/probedBehavior/
+// probedFormat），供保存逻辑统一判定「表单 URL 与探测 URL 不一致时
+// 探测结果是否仍适用」（URL 留空或改 URL 均覆盖）。
+$('#btnProbeTemplate').onclick = async () => {
+  const url = $('#tplUrl').value.trim();
+  if (!url) { toast('请先填写规则集 URL', true); return; }
+  const btn = $('#btnProbeTemplate');
+  btn.disabled = true;
+  btn.textContent = '探测中…';
+  try {
+    const data = await apiJSON('/api/v1/templates/probe', {
+      method: 'POST', body: JSON.stringify({ url }),
+    });
+    btn.dataset.probedUrl = url;
+    // 记录实际回填的下拉值（未识别则为空串）：保存时用「表单值仍等于
+    // 回填值」判断用户是否手改过，决定是否还原/清空
+    btn.dataset.probedBehavior = data.behavior || '';
+    btn.dataset.probedFormat = data.format || '';
+    if (data.format) $('#tplFormat').value = data.format;
+    if (data.behavior) $('#tplBehavior').value = data.behavior;
+    $('#tplProbeReason').textContent = data.reason || '';
+    $('#tplProbePreview').textContent = (data.preview || []).join('\n');
+    $('#tplProbeBox').classList.remove('hidden');
+    toast('探测完成：' + (data.behavior || '未识别') + ' / ' + (data.format || '未识别'));
+  } catch (err) {
+    // 失败时隐藏预览区：残留的旧结果会误导用户当成新结果保存
+    hideProbeResult();
+    toast('探测失败：' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '自动探测';
+  }
+};
+
+// 用户修改 URL 后隐藏预览区：旧探测结果与新 URL 不匹配，防止误保存
+$('#tplUrl').addEventListener('input', hideProbeResult);
+
 $('#templateRows').addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const id = btn.dataset.id;
   if (btn.dataset.act === 'edit') {
+    // 清理上一次新建/编辑残留的探测预览与探测记录：JS 赋 value 不触发
+    // input 事件，预览不会自动隐藏；probedUrl 残留会让保存误判
+    // 「探测结果仍适用」。
+    hideProbeResult();
+    $('#btnProbeTemplate').dataset.probedUrl = '';
+    $('#btnProbeTemplate').dataset.probedBehavior = '';
+    $('#btnProbeTemplate').dataset.probedFormat = '';
     try {
       const data = await apiJSON('/api/v1/templates');
       const tpl = (data.templates || []).find((t) => t.id === id);
       if (!tpl) return;
       state.editingTemplateId = id;
+      // 记录模板原 behavior/format：探测回填会覆盖表单值，URL 留空保存时
+      // 需恢复原值（见 submit 处理），故在探测前存入 state
+      state.tplBehavior = tpl.behavior;
+      state.tplFormat = tpl.format;
       $('#templateFormTitle').textContent = '编辑模板：' + tpl.name;
       $('#tplName').value = tpl.name;
       $('#tplUrl').value = '';

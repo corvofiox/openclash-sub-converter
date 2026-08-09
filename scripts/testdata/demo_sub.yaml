@@ -1,0 +1,14 @@
+proxies:
+  - name: "TestNode1"
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-256-gcm
+    password: testpass
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies: ["TestNode1"]
+rules:
+  - DOMAIN-SUFFIX,google.com,Proxy
+  - MATCH,Proxy

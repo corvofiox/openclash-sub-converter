@@ -120,6 +120,11 @@
       <h3 id="templateFormTitle">新增模板</h3>
       <label>名称 <input type="text" id="tplName" placeholder="例如：广告拦截" required></label>
       <label>规则集 URL <input type="text" id="tplUrl" placeholder="https://example.com/rules.yaml" required></label>
+      <button type="button" id="btnProbeTemplate" class="btn small">自动探测</button>
+      <div id="tplProbeBox" class="hidden">
+        <p id="tplProbeReason" class="hint"></p>
+        <pre id="tplProbePreview"></pre>
+      </div>
       <div class="grid2">
         <label>behavior
           <select id="tplBehavior">

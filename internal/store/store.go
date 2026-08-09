@@ -176,7 +176,10 @@ func (s *Store) loadTemplates() error {
 		return err
 	}
 	if !existed {
-		return nil
+		// 首次启动：templates.json 不存在 → 种入 8 个预置模板并落盘。
+		// 文件已存在（含空列表）绝不种入；损坏恢复（.bak 后空态）与
+		// version 不匹配空态同样不触发——预置删光后不复活。
+		return s.seedPresetTemplates()
 	}
 	if f.Version != dataVersion {
 		slog.Warn("store: templates.json 版本不匹配，按空态继续", "version", f.Version)

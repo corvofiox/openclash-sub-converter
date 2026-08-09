@@ -10,7 +10,8 @@ import (
 	"testing"
 )
 
-// TestNewCreatesDirAndEmpty 空目录 → 空态；目录不存在时自动创建。
+// TestNewCreatesDirAndEmpty 空目录 → sources/logs 空态；templates 种入 8 个
+// 预置（首次启动种子）；目录不存在时自动创建。
 func TestNewCreatesDirAndEmpty(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "data")
 	s, err := New(dir)
@@ -26,13 +27,13 @@ func TestNewCreatesDirAndEmpty(t *testing.T) {
 	if n := len(s.ListLogs(10)); n != 0 {
 		t.Errorf("logs = %d, want 0", n)
 	}
-	if n := len(s.ListTemplates()); n != 0 {
-		t.Errorf("templates = %d, want 0", n)
+	if n := len(s.ListTemplates()); n != 8 {
+		t.Errorf("templates = %d, want 8（首次启动种入预置）", n)
 	}
-	// 新目录不应产生任何文件（空态不落盘）
+	// 首次启动只落盘 templates.json（预置种子）；sources/logs 空态不落盘
 	entries, _ := os.ReadDir(dir)
-	if len(entries) != 0 {
-		t.Errorf("新目录出现文件: %v", entries)
+	if len(entries) != 1 || entries[0].Name() != "templates.json" {
+		t.Errorf("新目录文件 = %v, want 仅 templates.json", entries)
 	}
 }
 

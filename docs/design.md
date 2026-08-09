@@ -306,6 +306,18 @@ api.NewServer（同一 25500 端口）
 version 不匹配视为空态（warn），损坏文件备份为 `.json.bak` 后以空态继续——
 均不崩溃。Docker 部署时 `./data:/app/data` 挂载持久化。
 
+### 预置模板（首次启动种子）
+
+`templates.json` 不存在时（首次启动），自动种入 8 个 ACL4SSR 常用规则模板：
+广告拦截（BanAD.list）、Netflix、YouTube、Telegram、Google、Twitter、Apple、
+Microsoft（Ruleset/ 系列），URL 指向 ACL4SSR 官方 Clash 规则集
+（`https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/`），
+统一 behavior=domain、format=text、默认禁用（Enabled=false），ID 与落盘
+复用普通模板创建逻辑（crypto/rand 12 hex + 原子写 0600）。种入后即为
+**普通模板**：可编辑、可删除、可改名，无任何特殊标记。仅当文件不存在时
+种入——文件已存在（哪怕空列表）、损坏恢复空态、version 不匹配空态均不
+触发，用户删光预置后重启不会复活。
+
 ## M3-5 认证
 
 - 令牌来自 env `OSC_ADMIN_TOKEN`（不读配置文件，避免随配置分发泄露）；

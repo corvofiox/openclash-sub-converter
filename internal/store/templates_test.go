@@ -55,8 +55,9 @@ func TestCreateTemplateValidation(t *testing.T) {
 			t.Errorf("err = %q, want 包含 %q", err.Error(), tc.wantErr)
 		}
 	}
-	if n := len(s.ListTemplates()); n != 1 {
-		t.Errorf("templates = %d, want 1（仅合法基线入库）", n)
+	// 8 个预置 + 1 条合法基线入库（非法用例全部被拒）
+	if n := len(s.ListTemplates()); n != 9 {
+		t.Errorf("templates = %d, want 9（8 预置 + 仅合法基线入库）", n)
 	}
 }
 

@@ -142,6 +142,13 @@ check "token: /api/v1/sources 无 token 401" "401" "$(curl -s -o /dev/null -w '%
 check "token: /api/v1/sources 带 X-Token 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/sources)"
 check "token: /sub 无 token 不 401（参数错误 400）" "400" "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:'$TOK_PORT'/sub?target=clash')"
 
+# 7.6 预置模板种子：全新数据目录（$WORK/data_tok 每次冒烟前 rm -rf）首次启动
+# 自动种入 8 个 ACL4SSR 模板，列表 ≥8 条且含 Netflix（URL 判定，python3 JSON 解析）
+TPL_SEEDED=$(curl -s -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/templates | python3 -c 'import json,sys;print(1 if len(json.load(sys.stdin)["templates"])>=8 else 0)')
+check "token: templates 预置种入 ≥8 条" "1" "$TPL_SEEDED"
+TPL_NETFLIX=$(curl -s -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/templates | python3 -c 'import json,sys;print(1 if any("Netflix" in t["url"] for t in json.load(sys.stdin)["templates"]) else 0)')
+check "token: templates 含 Netflix 预置" "1" "$TPL_NETFLIX"
+
 # 8. mihomo 全量校验产物
 mkdir -p cmd/validate_tmp
 cat > cmd/validate_tmp/main.go <<EOF

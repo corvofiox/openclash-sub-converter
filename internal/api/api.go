@@ -118,6 +118,7 @@ type convertResult struct {
 }
 
 // runPipeline 执行转换管线：拉取→解析→节点级校验→transform→groups→
+// ApplyStripEmoji（strip_emoji=true 时剥离节点名 emoji，可选）→
 // template（可选规则模板注入）→（render=true 时）渲染+校验。
 //
 // 语义分层：结构非法的源 URL 由调用方在进入本函数前校验（400）；结构合法但
@@ -181,6 +182,9 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 	if err != nil {
 		return nil, &pipelineError{code: http.StatusInternalServerError, msg: fmt.Sprintf("build proxy groups failed: %v", err)}
 	}
+	// R2：剥离节点名 emoji（识别已在 groups.Build 基于原始名完成）；
+	// strip=false 时 no-op。剥离后统一 uniqueName 去重并改写组 proxies 引用。
+	transform.ApplyStripEmoji(nodes, groupsList, filter.StripEmoji)
 	cfgMap, err := template.Build(nodes, groupsList, opts)
 	if err != nil {
 		return nil, &pipelineError{code: http.StatusInternalServerError, msg: fmt.Sprintf("build config failed: %v", err)}
@@ -212,12 +216,14 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 // handleSub 执行转换流水线：
 //
 //	fetcher.Fetch → link.ParseSubscription → adapter.ParseProxy 节点级校验
-//	  （失败跳过+warn）→ transform.Apply → groups.Build → template.Build
+//	  （失败跳过+warn）→ transform.Apply → groups.Build
+//	  → ApplyStripEmoji（strip_emoji=true 时剥离节点名 emoji）→ template.Build
 //	  → output.Render → output.Validate（YAML 语法层）
 //
 // 参数：target 必须为 "clash"；url 必填（多个源用 | 分隔）或 src=<订阅源ID>
 // 二选一（同时存在 src 优先，凭证不进 URL）；include/exclude/rename 为可选
-// 正则；udp/tls13/scv 取值 "true"/"1" 视为 true。
+// 正则；udp/tls13/scv/strip_emoji 取值 "true"/"1" 视为 true。
+// strip_emoji=true 时在输出阶段剥离节点名中的 emoji（识别仍基于原始名）。
 //
 // 错误映射：参数错误 400（含非法 url 结构、src 不可用、正则非法）；所有源
 // 拉取失败或校验后无有效节点 502；转换/渲染/校验失败 500。部分源失败时只
@@ -266,9 +272,10 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filter := transform.Filter{
-		Rename:  q.Get("rename"),
-		Include: q.Get("include"),
-		Exclude: q.Get("exclude"),
+		Rename:     q.Get("rename"),
+		Include:    q.Get("include"),
+		Exclude:    q.Get("exclude"),
+		StripEmoji: truthy(q.Get("strip_emoji")),
 	}
 	opts := template.Options{
 		UDP:   truthy(q.Get("udp")),
@@ -283,7 +290,7 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 		SourceName:  srcName,
 		URLRedacted: redactURL(urlFullOrSources(urlFull, sources)),
 		URLFull:     urlFull,
-		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), opts.UDP, opts.TLS13, opts.SCV, ""),
+		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), opts.UDP, opts.TLS13, opts.SCV, truthy(q.Get("strip_emoji")), ""),
 		Status:      statusOf(perr),
 		Error:       errOf(perr),
 		NodeCount:   nodeCountOf(res, perr),
@@ -310,6 +317,7 @@ type convertRequest struct {
 	UDP        *bool   `json:"udp"`
 	TLS13      *bool   `json:"tls13"`
 	SCV        *bool   `json:"scv"`
+	StripEmoji *bool   `json:"strip_emoji"`
 	TemplateID string  `json:"template_id"`
 }
 
@@ -368,7 +376,7 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 			tpl = &t
 		}
 
-		filter := transform.Filter{Rename: req.Rename, Include: req.Include, Exclude: req.Exclude}
+		filter := transform.Filter{Rename: req.Rename, Include: req.Include, Exclude: req.Exclude, StripEmoji: boolVal(req.StripEmoji)}
 		opts := template.Options{UDP: boolVal(req.UDP), TLS13: boolVal(req.TLS13), SCV: boolVal(req.SCV)}
 
 		res, perr := s.runPipeline(r, sources, filter, opts, tpl, render)
@@ -378,7 +386,7 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 			SourceName:  srcName,
 			URLRedacted: redactURL(urlFullOrSources(urlFull, sources)),
 			URLFull:     urlFull,
-			Params:      buildParams(req.Include, req.Exclude, req.Rename, opts.UDP, opts.TLS13, opts.SCV, req.TemplateID),
+			Params:      buildParams(req.Include, req.Exclude, req.Rename, opts.UDP, opts.TLS13, opts.SCV, boolVal(req.StripEmoji), req.TemplateID),
 			Status:      statusOf(perr),
 			Error:       errOf(perr),
 			NodeCount:   nodeCountOf(res, perr),
@@ -470,9 +478,10 @@ func (s *server) handleLogRetry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filter := transform.Filter{
-		Rename:  strParam(entry.Params, "rename"),
-		Include: strParam(entry.Params, "include"),
-		Exclude: strParam(entry.Params, "exclude"),
+		Rename:     strParam(entry.Params, "rename"),
+		Include:    strParam(entry.Params, "include"),
+		Exclude:    strParam(entry.Params, "exclude"),
+		StripEmoji: boolParam(entry.Params, "strip_emoji"), // 旧日志无此键→false（默认关）
 	}
 	opts := template.Options{
 		UDP:   boolParam(entry.Params, "udp"),
@@ -948,10 +957,10 @@ func urlFullOrSources(urlFull string, sources []string) string {
 }
 
 // buildParams 组装日志 Params（template_id 仅非空时写入）。
-func buildParams(include, exclude, rename string, udp, tls13, scv bool, templateID string) map[string]any {
+func buildParams(include, exclude, rename string, udp, tls13, scv, stripEmoji bool, templateID string) map[string]any {
 	m := map[string]any{
 		"include": include, "exclude": exclude, "rename": rename,
-		"udp": udp, "tls13": tls13, "scv": scv,
+		"udp": udp, "tls13": tls13, "scv": scv, "strip_emoji": stripEmoji,
 	}
 	if templateID != "" {
 		m["template_id"] = templateID
@@ -1015,7 +1024,7 @@ func (s *server) logSubError(w http.ResponseWriter, r *http.Request, start time.
 		SourceName:  srcName,
 		URLRedacted: redactURL(rawURL),
 		URLFull:     rawURL,
-		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), truthy(q.Get("udp")), truthy(q.Get("tls13")), truthy(q.Get("scv")), ""),
+		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), truthy(q.Get("udp")), truthy(q.Get("tls13")), truthy(q.Get("scv")), truthy(q.Get("strip_emoji")), ""),
 		Status:      "fail",
 		Error:       &errMsg,
 		DurationMS:  time.Since(start).Milliseconds(),

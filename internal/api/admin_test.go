@@ -992,3 +992,108 @@ func TestRequestBodyTooLarge(t *testing.T) {
 		}
 	}
 }
+
+// TestConvertStripEmoji 断言 convert 端点 strip_emoji:true：preview 返回的
+// 节点名无旗标 emoji、组 proxies 引用一致；run 返回的 YAML 节点名同样无
+// emoji 且可解析。不传该字段=默认关（节点名原样保留）。
+func TestConvertStripEmoji(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+
+	// preview：strip_emoji:true → 节点名无旗标，组引用一致
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/preview",
+		fmt.Sprintf(`{"url":%q,"strip_emoji":true}`, src.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview strip status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Nodes  []map[string]string `json:"nodes"`
+		Groups []map[string]any    `json:"groups"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("preview body not json: %v", err)
+	}
+	names := map[string]bool{}
+	for _, n := range resp.Nodes {
+		names[n["name"]] = true
+	}
+	if !names["香港-01"] || !names["日本-01"] || names["🇭🇰 香港-01"] || names["🇯🇵 日本-01"] {
+		t.Errorf("preview nodes = %v, want 香港-01/日本-01 且无旗标", names)
+	}
+	if len(resp.Groups) == 0 {
+		t.Fatal("preview groups empty")
+	}
+	// retry：日志 Params 记录了 strip_emoji=true，重试后节点名仍无 emoji（验收 7）
+	logs := st.ListLogs(10)
+	if len(logs) == 0 {
+		t.Fatal("no conversion logs after preview")
+	}
+	rec = doJSON(h, http.MethodPost, "/api/v1/logs/"+logs[0].ID+"/retry", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var retryResp struct {
+		Nodes     []map[string]string `json:"nodes"`
+		NodeCount int                 `json:"node_count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &retryResp); err != nil {
+		t.Fatalf("retry body not json: %v", err)
+	}
+	if retryResp.NodeCount != 2 {
+		t.Errorf("retry node_count = %d, want 2", retryResp.NodeCount)
+	}
+	for _, n := range retryResp.Nodes {
+		if strings.Contains(n["name"], "🇭🇰") || strings.Contains(n["name"], "🇯🇵") {
+			t.Errorf("retry 节点名 %q 仍含旗标（Params 未记录 strip_emoji?）", n["name"])
+		}
+	}
+	groupNames := map[string]bool{}
+	for _, g := range resp.Groups {
+		groupNames[g["name"].(string)] = true
+	}
+	if !groupNames["手动选择"] || !groupNames["香港节点"] || !groupNames["日本节点"] {
+		t.Errorf("preview group names = %v, want 手动选择/香港节点/日本节点", groupNames)
+	}
+	validRefs := map[string]bool{"DIRECT": true, "REJECT": true}
+	for n := range names {
+		validRefs[n] = true
+	}
+	for gn := range groupNames {
+		validRefs[gn] = true
+	}
+	for _, g := range resp.Groups {
+		refs, _ := g["proxies"].([]any)
+		for _, ref := range refs {
+			if s, ok := ref.(string); ok && !validRefs[s] {
+				t.Errorf("group %v 引用 %q 不存在", g["name"], s)
+			}
+		}
+	}
+
+	// run：strip_emoji:true → YAML 节点名无旗标
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/run",
+		fmt.Sprintf(`{"url":%q,"strip_emoji":true}`, src.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run strip status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var runResp struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &runResp); err != nil {
+		t.Fatalf("run body not json: %v", err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal([]byte(runResp.YAML), &cfg); err != nil {
+		t.Fatalf("run yaml not valid: %v", err)
+	}
+	proxies, _ := cfg["proxies"].([]any)
+	if len(proxies) != 2 {
+		t.Fatalf("run proxies len = %d, want 2", len(proxies))
+	}
+	for _, p := range proxies {
+		name := p.(map[string]any)["name"].(string)
+		if strings.Contains(name, "🇭🇰") || strings.Contains(name, "🇯🇵") {
+			t.Errorf("run proxy name %q 仍含旗标", name)
+		}
+	}
+}

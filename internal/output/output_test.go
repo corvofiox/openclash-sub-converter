@@ -52,12 +52,12 @@ func validConfig() map[string]any {
 			},
 		},
 		"proxy-groups": []map[string]any{
-			{"name": "🚀 手动选择", "type": "select", "proxies": []any{"DIRECT", "ss-test", "vless-reality"}},
-			{"name": "♻️ 自动选择", "type": "url-test", "url": "https://www.gstatic.com/generate_204", "interval": 300, "proxies": []any{"ss-test", "vless-reality"}},
+			{"name": "手动选择", "type": "select", "proxies": []any{"DIRECT", "ss-test", "vless-reality"}},
+			{"name": "自动选择", "type": "url-test", "url": "https://www.gstatic.com/generate_204", "interval": 300, "proxies": []any{"ss-test", "vless-reality"}},
 			{"name": "DIRECT", "type": "direct"},
 			{"name": "REJECT", "type": "reject"},
 		},
-		"rules": []any{"GEOIP,CN,DIRECT", "MATCH,🚀 手动选择"},
+		"rules": []any{"GEOIP,CN,DIRECT", "MATCH,手动选择"},
 	}
 }
 

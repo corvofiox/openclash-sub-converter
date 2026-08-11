@@ -210,16 +210,16 @@ func TestSubSuccess(t *testing.T) {
 		groupNames[m["name"].(string)] = true
 	}
 	// 策略组构建生效
-	if !groupNames["🚀 手动选择"] || !groupNames["🇭🇰 香港节点"] || !groupNames["🇯🇵 日本节点"] {
-		t.Errorf("proxy group names = %v, want 🚀 手动选择 / 🇭🇰 香港节点 / 🇯🇵 日本节点", groupNames)
+	if !groupNames["手动选择"] || !groupNames["香港节点"] || !groupNames["日本节点"] {
+		t.Errorf("proxy group names = %v, want 手动选择 / 香港节点 / 日本节点", groupNames)
 	}
 	// 规则注入
 	rules, ok := cfg["rules"].([]any)
 	if !ok || len(rules) != 2 {
 		t.Fatalf("rules = %T %v, want 2 entries", cfg["rules"], cfg["rules"])
 	}
-	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,🚀 手动选择" {
-		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,🚀 手动选择]", rules)
+	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,手动选择" {
+		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,手动选择]", rules)
 	}
 }
 
@@ -420,6 +420,150 @@ func TestSubErrorDoesNotLeakCredentials(t *testing.T) {
 	for _, leak := range []string{"user:pass", "token=SECRET", credsURL} {
 		if strings.Contains(logs, leak) {
 			t.Errorf("log leaks %q:\n%s", leak, logs)
+		}
+	}
+}
+
+// TestSubStripEmoji 断言 strip_emoji=true：节点名剥离旗标 emoji（识别仍基于
+// 原始名→组名不变且无 emoji）、组 proxies 引用与 proxies 段一致、rules[1]
+// 仍为 MATCH,手动选择。
+func TestSubStripEmoji(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	rec := do(h, subQuery(src.URL, map[string]string{"strip_emoji": "true"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	proxies, ok := cfg["proxies"].([]any)
+	if !ok || len(proxies) != 2 {
+		t.Fatalf("proxies = %T len %d, want 2", cfg["proxies"], len(proxies))
+	}
+	names := map[string]bool{}
+	for _, p := range proxies {
+		names[p.(map[string]any)["name"].(string)] = true
+	}
+	if !names["香港-01"] || !names["日本-01"] {
+		t.Errorf("proxy names = %v, want 香港-01 / 日本-01（旗标已剥离）", names)
+	}
+	if names["🇭🇰 香港-01"] || names["🇯🇵 日本-01"] {
+		t.Errorf("proxy names = %v, emoji 名不应存在", names)
+	}
+
+	// 组名无 emoji 且引用一致：每条组 proxies 引用都落在
+	// 节点名 ∪ 组名 ∪ {DIRECT, REJECT} 内
+	groups, ok := cfg["proxy-groups"].([]any)
+	if !ok {
+		t.Fatalf("proxy-groups = %T, want list", cfg["proxy-groups"])
+	}
+	groupNames := map[string]bool{}
+	for _, g := range groups {
+		groupNames[g.(map[string]any)["name"].(string)] = true
+	}
+	for _, want := range []string{"手动选择", "自动选择", "香港节点", "日本节点", "DIRECT", "REJECT"} {
+		if !groupNames[want] {
+			t.Errorf("group names = %v, want 含 %s", groupNames, want)
+		}
+	}
+	validRefs := map[string]bool{"DIRECT": true, "REJECT": true}
+	for n := range names {
+		validRefs[n] = true
+	}
+	for gn := range groupNames {
+		validRefs[gn] = true
+	}
+	for _, g := range groups {
+		m := g.(map[string]any)
+		refs, _ := m["proxies"].([]any)
+		for _, ref := range refs {
+			s, ok := ref.(string)
+			if !ok {
+				t.Errorf("group %v proxies 条目非字符串: %v", m["name"], ref)
+				continue
+			}
+			if !validRefs[s] {
+				t.Errorf("group %v 引用 %q 在节点名/组名集合中不存在", m["name"], s)
+			}
+		}
+	}
+	// 自动选择组 proxies 全部为节点名（无组名混入）
+	auto := findGroupByName(t, groups, "自动选择")
+	for _, ref := range auto["proxies"].([]any) {
+		if !names[ref.(string)] {
+			t.Errorf("自动选择 引用 %q 不是节点名", ref)
+		}
+	}
+
+	// rules 兜底仍指向无 emoji 的手动选择
+	rules, ok := cfg["rules"].([]any)
+	if !ok || len(rules) != 2 {
+		t.Fatalf("rules = %T %v, want 2 entries", cfg["rules"], cfg["rules"])
+	}
+	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,手动选择" {
+		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,手动选择]", rules)
+	}
+}
+
+// findGroupByName 按组名查找策略组（测试辅助）。
+func findGroupByName(t *testing.T, groups []any, name string) map[string]any {
+	t.Helper()
+	for _, g := range groups {
+		m := g.(map[string]any)
+		if m["name"] == name {
+			return m
+		}
+	}
+	t.Fatalf("group %q not found in %v", name, groups)
+	return nil
+}
+
+// TestSubStripEmojiDupNames 断言重名场景（验收 9）：输入 🇭🇰 香港01 与 香港01，
+// strip_emoji=true 后输出名唯一（香港01 / 香港01 (2)）、地区组 proxies 引用与
+// proxies 段一致，且产物通过 mihomo output.Validate（重名会被 mihomo 拒绝）。
+func TestSubStripEmojiDupNames(t *testing.T) {
+	h := newTestServer(t)
+	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	body := fmt.Sprintf("ss://%s@example.com:8388#🇭🇰 香港01\nss://%s@example.com:8388#香港01\n", ui, ui)
+	src := fakeSource(t, http.StatusOK, body)
+	rec := do(h, subQuery(src.URL, map[string]string{"strip_emoji": "true"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（mihomo 校验必须通过）; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	proxies, _ := cfg["proxies"].([]any)
+	if len(proxies) != 2 {
+		t.Fatalf("proxies len = %d, want 2", len(proxies))
+	}
+	names := map[string]bool{}
+	for _, p := range proxies {
+		names[p.(map[string]any)["name"].(string)] = true
+	}
+	if !names["香港01"] || !names["香港01 (2)"] {
+		t.Errorf("proxy names = %v, want 香港01 / 香港01 (2)", names)
+	}
+	if len(names) != 2 {
+		t.Errorf("proxy names 应唯一（mihomo 拒绝重名），got %v", names)
+	}
+	// 香港组 proxies 引用与 proxies 段一致
+	groups, _ := cfg["proxy-groups"].([]any)
+	for _, g := range groups {
+		m := g.(map[string]any)
+		if m["name"] != "香港节点" {
+			continue
+		}
+		refs, _ := m["proxies"].([]any)
+		got := map[string]bool{}
+		for _, r := range refs {
+			got[r.(string)] = true
+		}
+		if !got["香港01"] || !got["香港01 (2)"] {
+			t.Errorf("香港节点 proxies = %v, want 香港01 / 香港01 (2)", got)
 		}
 	}
 }

@@ -8,8 +8,8 @@ import (
 // testGroups 是 Build 测试用的最小策略组列表。
 func testGroups() []map[string]any {
 	return []map[string]any{
-		{"name": "🚀 手动选择", "type": "select", "proxies": []any{"DIRECT", "♻️ 自动选择", "🇭🇰 香港节点"}},
-		{"name": "♻️ 自动选择", "type": "url-test", "url": "https://www.gstatic.com/generate_204", "interval": 300},
+		{"name": "手动选择", "type": "select", "proxies": []any{"DIRECT", "自动选择", "香港节点"}},
+		{"name": "自动选择", "type": "url-test", "url": "https://www.gstatic.com/generate_204", "interval": 300},
 		{"name": "DIRECT", "type": "direct"},
 	}
 }
@@ -84,8 +84,8 @@ func TestBuildBasic(t *testing.T) {
 	if !ok || len(rules) != 2 {
 		t.Fatalf("rules = %T %v", cfg["rules"], cfg["rules"])
 	}
-	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,🚀 手动选择" {
-		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,🚀 手动选择]", rules)
+	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,手动选择" {
+		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,手动选择]", rules)
 	}
 
 	// 默认选项下不新增任何字段

@@ -57,7 +57,7 @@ func TestBuildMixedRegions(t *testing.T) {
 	if manual["type"] != "select" {
 		t.Errorf("manual type = %v, want select", manual["type"])
 	}
-	wantManual := []string{"DIRECT", GroupAuto, "🇭🇰 香港节点", "🇯🇵 日本节点", "🇸🇬 新加坡节点", GroupOther}
+	wantManual := []string{"DIRECT", GroupAuto, "香港节点", "日本节点", "新加坡节点", GroupOther}
 	if got := proxies(manual); !reflect.DeepEqual(got, wantManual) {
 		t.Errorf("manual proxies = %v, want %v", got, wantManual)
 	}
@@ -68,7 +68,7 @@ func TestBuildMixedRegions(t *testing.T) {
 		t.Errorf("auto proxies = %v, want %v", got, wantAuto)
 	}
 
-	hk := findGroup(t, groups, "🇭🇰 香港节点")
+	hk := findGroup(t, groups, "香港节点")
 	if hk["type"] != "url-test" || hk["url"] != TestURL || hk["interval"] != TestInterval {
 		t.Errorf("HK group fields = %v, want url-test %s %d", hk, TestURL, TestInterval)
 	}
@@ -76,12 +76,12 @@ func TestBuildMixedRegions(t *testing.T) {
 		t.Errorf("HK proxies = %v", got)
 	}
 
-	jp := findGroup(t, groups, "🇯🇵 日本节点")
+	jp := findGroup(t, groups, "日本节点")
 	if got := proxies(jp); !reflect.DeepEqual(got, []string{"🇯🇵 日本 01"}) {
 		t.Errorf("JP proxies = %v", got)
 	}
 
-	sg := findGroup(t, groups, "🇸🇬 新加坡节点")
+	sg := findGroup(t, groups, "新加坡节点")
 	if got := proxies(sg); !reflect.DeepEqual(got, []string{"新加坡 01"}) {
 		t.Errorf("SG proxies = %v", got)
 	}
@@ -113,13 +113,13 @@ func TestBuildMoreRegions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
-	for _, want := range []string{"🇺🇸 美国节点", "🇹🇼 台湾节点", "🇸🇬 新加坡节点", "🇬🇧 英国节点", "🇷🇺 俄罗斯节点"} {
+	for _, want := range []string{"美国节点", "台湾节点", "新加坡节点", "英国节点", "俄罗斯节点"} {
 		findGroup(t, groups, want)
 	}
 	// 无未知节点 → 不生成其他节点组
 	for _, g := range groups {
 		if g["name"] == GroupOther {
-			t.Error("unexpected 🌐 其他节点 group")
+			t.Error("unexpected 其他节点 group")
 		}
 	}
 }
@@ -134,7 +134,7 @@ func TestBuildDuplicateNodeNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
-	hk := findGroup(t, groups, "🇭🇰 香港节点")
+	hk := findGroup(t, groups, "香港节点")
 	if got := proxies(hk); !reflect.DeepEqual(got, []string{"🇭🇰 香港 01"}) {
 		t.Errorf("HK proxies = %v, want deduped [🇭🇰 香港 01]", got)
 	}
@@ -189,7 +189,7 @@ func TestBuildSkipsNonStringName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
-	hk := findGroup(t, groups, "🇭🇰 香港节点")
+	hk := findGroup(t, groups, "香港节点")
 	if got := proxies(hk); !reflect.DeepEqual(got, []string{"🇭🇰 香港 01"}) {
 		t.Errorf("HK proxies = %v", got)
 	}
@@ -202,5 +202,5 @@ func TestBuildEmojiInMiddleOfName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
-	findGroup(t, groups, "🇭🇰 香港节点")
+	findGroup(t, groups, "香港节点")
 }

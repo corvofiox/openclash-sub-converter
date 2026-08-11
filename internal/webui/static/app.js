@@ -319,6 +319,7 @@ function convertBody() {
     udp: $('#convUdp').checked,
     tls13: $('#convTls13').checked,
     scv: $('#convScv').checked,
+    strip_emoji: $('#convStripEmoji').checked,
   };
   const tpl = $('#convTemplate').value;
   if (tpl) body.template_id = tpl;
@@ -368,6 +369,7 @@ function genSubLink() {
   if ($('#convUdp').checked) q.set('udp', 'true');
   if ($('#convTls13').checked) q.set('tls13', 'true');
   if ($('#convScv').checked) q.set('scv', 'true');
+  if ($('#convStripEmoji').checked) q.set('strip_emoji', 'true');
   // window.location.host 已含端口（如 192.168.1.5:25500）；协议跟随当前页面
   // （http/https），避免硬编码 http:// 在反代 TLS 场景下生成错误链接
   return window.location.protocol + '//' + window.location.host + '/sub?' + q.toString();
@@ -428,7 +430,7 @@ function paramSummary(p) {
   ['include', 'exclude', 'rename'].forEach((k) => {
     if (p[k]) parts.push(`<span class="param-badge">${esc(k)}=${esc(p[k])}</span>`);
   });
-  ['udp', 'tls13', 'scv'].forEach((k) => {
+  ['udp', 'tls13', 'scv', 'strip_emoji'].forEach((k) => {
     if (p[k]) parts.push(`<span class="param-badge">${esc(k)}</span>`);
   });
   if (p.template_id) parts.push(`<span class="param-badge">template</span>`);

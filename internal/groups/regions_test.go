@@ -76,7 +76,7 @@ func emojiRegionIndicators(emoji string) (rune, rune) {
 
 // TestRegionOfMatrix 识别矩阵（方案第 8 节 B）：每层正例、emoji+文字混合、
 // 防误判反例、英文单词同形、优先级冲突、城市映射。want 为空串表示识别失败
-// （应进 "🌐 其他节点"）。
+// （应进 "其他节点"）。
 func TestRegionOfMatrix(t *testing.T) {
 	tests := []struct {
 		name string
@@ -186,15 +186,15 @@ func TestBuildMultiSourceGroups(t *testing.T) {
 	}
 
 	// 文字+ISO+emoji 共组：香港组 3 节点
-	hk := findGroup(t, groups, "🇭🇰 香港节点")
+	hk := findGroup(t, groups, "香港节点")
 	if got := proxies(hk); !reflect.DeepEqual(got, []string{"香港01", "HK-01", "🇭🇰 香港 02"}) {
 		t.Errorf("HK proxies = %v, want 3 节点共组", got)
 	}
-	jp := findGroup(t, groups, "🇯🇵 日本节点")
+	jp := findGroup(t, groups, "日本节点")
 	if got := proxies(jp); !reflect.DeepEqual(got, []string{"Tokyo-2"}) {
 		t.Errorf("JP proxies = %v", got)
 	}
-	au := findGroup(t, groups, "🇦🇺 澳大利亚节点")
+	au := findGroup(t, groups, "澳大利亚节点")
 	if got := proxies(au); !reflect.DeepEqual(got, []string{"Australia-01"}) {
 		t.Errorf("AU proxies = %v", got)
 	}
@@ -205,7 +205,7 @@ func TestBuildMultiSourceGroups(t *testing.T) {
 
 	// GroupManual 组名顺序：地区组按首次出现，其他节点恒最后
 	manual := findGroup(t, groups, GroupManual)
-	wantManual := []string{"DIRECT", GroupAuto, "🇭🇰 香港节点", "🇯🇵 日本节点", "🇦🇺 澳大利亚节点", GroupOther}
+	wantManual := []string{"DIRECT", GroupAuto, "香港节点", "日本节点", "澳大利亚节点", GroupOther}
 	if got := proxies(manual); !reflect.DeepEqual(got, wantManual) {
 		t.Errorf("manual proxies = %v, want %v", got, wantManual)
 	}

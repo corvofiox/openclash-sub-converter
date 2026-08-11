@@ -11,26 +11,25 @@ const (
 	TestURL      = "https://www.gstatic.com/generate_204"
 	TestInterval = 300
 
-	GroupManual = "🚀 手动选择"
-	GroupAuto   = "♻️ 自动选择"
-	GroupOther  = "🌐 其他节点"
+	GroupManual = "手动选择"
+	GroupAuto   = "自动选择"
+	GroupOther  = "其他节点"
 )
 
 // regionGroup 是一个地区策略组的中间表示。
 type regionGroup struct {
-	emoji  string
 	region string
 	nodes  []string
 }
 
 // Build 根据节点列表构建策略组列表：
 //
-//   - "🚀 手动选择" type=select，proxies=[DIRECT, ♻️ 自动选择, <地区组名...>]；
-//   - "♻️ 自动选择" type=url-test，proxies=[全部节点名]（去重）；
+//   - "手动选择" type=select，proxies=[DIRECT, 自动选择, <地区组名...>]；
+//   - "自动选择" type=url-test，proxies=[全部节点名]（去重）；
 //   - 地区组：按节点名识别地区（emoji/中文/拼音/英文/ISO 代码五层线索，取名字中
-//     第一个地区线索），组名 "「emoji 地区」节点" 格式，type=url-test，
+//     第一个地区线索），组名 "<地区>节点" 格式，type=url-test，
 //     url/interval 固定；节点数 0 的地区不生成组；
-//   - 无任何地区线索或无法识别的节点归入 "🌐 其他节点" 组；
+//   - 无任何地区线索或无法识别的节点归入 "其他节点" 组；
 //   - 兜底组 "DIRECT"(type=direct) 与 "REJECT"(type=reject)。
 //
 // 节点名重复时去重（同一节点只进一个组）。空节点列表仍输出手动选择/自动选择/
@@ -51,14 +50,14 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 		seenName[name] = true
 		allNames = append(allNames, name)
 
-		emoji, region, ok := regionOf(name)
+		_, region, ok := regionOf(name)
 		if !ok {
 			otherNodes = append(otherNodes, name)
 			continue
 		}
 		rg, exists := regionByName[region]
 		if !exists {
-			rg = &regionGroup{emoji: emoji, region: region}
+			rg = &regionGroup{region: region}
 			regionByName[region] = rg
 			regions = append(regions, rg)
 		}
@@ -69,13 +68,13 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 	manualProxies := []any{"DIRECT", GroupAuto}
 	groups := make([]map[string]any, 0, 3+len(regions)+2)
 
-	// 1. 🚀 手动选择（先收集组名，故先建地区组再填 proxies）
+	// 1. 手动选择（先收集组名，故先建地区组再填 proxies）
 	autoProxies := make([]any, 0, len(allNames))
 	for _, name := range allNames {
 		autoProxies = append(autoProxies, name)
 	}
 
-	// 2. ♻️ 自动选择
+	// 2. 自动选择
 	groups = append(groups, map[string]any{
 		"name":     GroupAuto,
 		"type":     "url-test",
@@ -86,7 +85,7 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 
 	// 3. 地区组
 	for _, rg := range regions {
-		gname := rg.emoji + " " + rg.region + "节点"
+		gname := rg.region + "节点"
 		manualProxies = append(manualProxies, gname)
 		proxies := make([]any, 0, len(rg.nodes))
 		for _, name := range rg.nodes {
@@ -101,7 +100,7 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 		})
 	}
 
-	// 4. 🌐 其他节点
+	// 4. 其他节点
 	if len(otherNodes) > 0 {
 		manualProxies = append(manualProxies, GroupOther)
 		proxies := make([]any, 0, len(otherNodes))
@@ -117,7 +116,7 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 		})
 	}
 
-	// 5. 🚀 手动选择（proxies 依赖上面组名，最后填充）
+	// 5. 手动选择（proxies 依赖上面组名，最后填充）
 	manual := map[string]any{
 		"name":    GroupManual,
 		"type":    "select",

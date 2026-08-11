@@ -23,7 +23,7 @@ const (
 	LogLevel   = "info"
 	IPv6       = false
 	DNSListen  = "0.0.0.0:7874"
-	ManualRule = "MATCH,🚀 手动选择"
+	ManualRule = "MATCH,手动选择"
 )
 
 // tls13Types 是 tls13 字段适用的代理类型。
@@ -38,7 +38,7 @@ var scvTypes = map[string]bool{
 // Build 组装完整 Clash 配置 map。
 //
 //   - 返回结构：mixed-port、allow-lan、mode、log-level、ipv6、dns、proxies、
-//     proxy-groups、rules（"GEOIP,CN,DIRECT" 与 "MATCH,🚀 手动选择"）。
+//     proxy-groups、rules（"GEOIP,CN,DIRECT" 与 "MATCH,手动选择"）。
 //   - opts 应用到每个节点：UDP→udp:true；TLS13→仅 ss/trojan/http 输出
 //     tls13:true；SCV→vmess/vless/trojan/hysteria2/tuic/anytls 输出
 //     skip-cert-verify:true（已存在的值被覆盖）。

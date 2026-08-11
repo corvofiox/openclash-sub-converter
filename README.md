@@ -9,7 +9,7 @@ OpenClash 订阅转换工具是一个轻量级 HTTP 服务（Go 单二进制，�
 
 - **多源聚合**：一次请求拉取多个机场订阅（`|` 分隔），自动识别 Base64 订阅 / Clash YAML / 单条协议链接（ss、ssr、vmess、vless、trojan、hysteria2、hysteria、tuic、anytls、socks5、http）
 - **可控命名**：`include` / `exclude` / `rename` 正则过滤与重命名，节点名/策略组名完全可控，与 OpenClash 自定义规则命名契约对齐
-- **策略组自动构建**：手动选择 / 自动选择 / 按 emoji/中文/拼音/英文/ISO 代码自动识别地区并分组 / DIRECT、REJECT 兜底
+- **策略组自动构建**：手动选择 / 自动选择 / 按 emoji/中文/拼音/英文/ISO 代码自动识别地区并分组（**组名不带 emoji**，如「香港节点」）/ DIRECT、REJECT 兜底
 - **输出可靠**：YAML 渲染后调用 mihomo `config.UnmarshalRawConfig` 全量校验，保证 OpenClash 可直接消费
 - **安全**：订阅 URL 凭证不出现在日志与错误消息中（只记 host）；响应 `Cache-Control: no-store`
 
@@ -49,7 +49,7 @@ go run ./cmd/server            # 读取 ./config/config.yaml（缺失则用默�
 ### `GET /sub` — 订阅转换（兼容 subconverter 调用习惯）
 
 ```
-GET /sub?target=clash&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=
+GET /sub?target=clash&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=&strip_emoji=
 ```
 
 | 参数 | 必填 | 说明 |
@@ -62,6 +62,7 @@ GET /sub?target=clash&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=
 | `udp` | 否 | `true`/`1` 时节点输出 `udp: true` |
 | `tls13` | 否 | `true`/`1` 时 ss/trojan/http 节点输出 `tls13: true` |
 | `scv` | 否 | `true`/`1` 时 vmess/vless/trojan/hysteria2/tuic/anytls 节点输出 `skip-cert-verify: true` |
+| `strip_emoji` | 否 | `true`/`1` 时节点名剥离 emoji（旗标/符号/VS16/ZWJ；保留空格与分隔符；剥离后重名自动加序号；识别仍基于原始名） |
 
 成功响应：`200`，`Content-Type: text/yaml; charset=utf-8`，`Cache-Control: no-store`，body 为完整 Clash YAML（mixed-port 7893、allow-lan、fake-ip DNS、proxies、proxy-groups、GEOIP,CN,DIRECT + MATCH 规则）。
 

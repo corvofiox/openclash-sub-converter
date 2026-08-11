@@ -176,3 +176,125 @@ func TestApplySkipsNonStringName(t *testing.T) {
 		t.Errorf("names = %v, want [ok]", got)
 	}
 }
+
+// TestStripEmoji 断言 emoji 剥离粒度：仅 emoji 字符（旗标/符号/VS16/ZWJ/键帽），
+// 保留空格与 |/｜ 分隔符；无 emoji 时字节不变；纯 emoji 名保留原名（防空名）。
+func TestStripEmoji(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"🇭🇰 香港 01", "香港 01"},           // 旗标剥离，空格保留
+		{"🇭🇰 香港 01 ｜ 电信", "香港 01 ｜ 电信"}, // 全角｜分隔符保留
+		{"🇭🇰🇺🇸 香港", "香港"},               // 双旗标
+		{"☀️ 香港", "香港"},                 // 2600 杂项符号 + VS16
+		{"👨‍👩‍👧‍👦 香港", "香港"},            // ZWJ 序列整体剥离
+		{"1️⃣ 香港", "1 香港"},              // 键帽剥离后残留数字
+		{"香港01", "香港01"},                // 无 emoji → 字节不变
+		{"香港  01", "香港  01"},            // 无 emoji → 双空格不折叠（字节不变）
+		{"🇭🇰 香港  01", "香港 01"},          // 有 emoji → 剥离后折叠连续空白
+		{"🇭🇰", "🇭🇰"},                    // 纯 emoji → 保留原名（防空名）
+	}
+	for _, tc := range cases {
+		if got := StripEmoji(tc.name); got != tc.want {
+			t.Errorf("StripEmoji(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// groupProxies 提取策略组 proxies 为字符串切片（测试辅助）。
+func groupProxies(g map[string]any) []string {
+	raw, ok := g["proxies"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		out = append(out, p.(string))
+	}
+	return out
+}
+
+// TestApplyStripEmoji 断言剥离编排：strip=false no-op；strip=true 时全部节点
+// 统一 uniqueName 去重、组 proxies 按 renameMap 全量改写、引用与节点名一致。
+func TestApplyStripEmoji(t *testing.T) {
+	t.Run("strip=false no-op", func(t *testing.T) {
+		nodes := []map[string]any{node("🇭🇰 香港01"), node("香港01")}
+		groups := []map[string]any{
+			{"name": "手动选择", "type": "select", "proxies": []any{"DIRECT", "🇭🇰 香港01", "香港01"}},
+		}
+		if rm := ApplyStripEmoji(nodes, groups, false); rm != nil {
+			t.Errorf("strip=false renameMap = %v, want nil", rm)
+		}
+		if got := names(nodes); !reflect.DeepEqual(got, []string{"🇭🇰 香港01", "香港01"}) {
+			t.Errorf("strip=false nodes mutated: %v", got)
+		}
+		if got := groupProxies(groups[0]); !reflect.DeepEqual(got, []string{"DIRECT", "🇭🇰 香港01", "香港01"}) {
+			t.Errorf("strip=false group proxies mutated: %v", got)
+		}
+	})
+
+	t.Run("strip=true 重名去重", func(t *testing.T) {
+		nodes := []map[string]any{node("🇭🇰 香港01"), node("香港01")}
+		groups := []map[string]any{
+			{"name": "手动选择", "type": "select", "proxies": []any{"DIRECT", "🇭🇰 香港01", "香港01"}},
+		}
+		rm := ApplyStripEmoji(nodes, groups, true)
+		if got := names(nodes); !reflect.DeepEqual(got, []string{"香港01", "香港01 (2)"}) {
+			t.Errorf("names = %v, want [香港01 香港01 (2)]", got)
+		}
+		if rm["🇭🇰 香港01"] != "香港01" || rm["香港01"] != "香港01 (2)" {
+			t.Errorf("renameMap = %v, want 🇭🇰 香港01→香港01, 香港01→香港01 (2)", rm)
+		}
+		if got := groupProxies(groups[0]); !reflect.DeepEqual(got, []string{"DIRECT", "香港01", "香港01 (2)"}) {
+			t.Errorf("group proxies = %v, want rewritten [DIRECT 香港01 香港01 (2)]", got)
+		}
+	})
+
+	t.Run("顺序颠倒 未剥离节点被挤号", func(t *testing.T) {
+		nodes := []map[string]any{node("香港01"), node("🇭🇰 香港01")}
+		groups := []map[string]any{
+			{"name": "手动选择", "type": "select", "proxies": []any{"DIRECT", "香港01", "🇭🇰 香港01"}},
+		}
+		rm := ApplyStripEmoji(nodes, groups, true)
+		if got := names(nodes); !reflect.DeepEqual(got, []string{"香港01", "香港01 (2)"}) {
+			t.Errorf("names = %v, want [香港01 香港01 (2)]", got)
+		}
+		if _, hit := rm["香港01"]; hit {
+			t.Errorf("renameMap 不应包含未改名的 香港01: %v", rm)
+		}
+		if rm["🇭🇰 香港01"] != "香港01 (2)" {
+			t.Errorf("renameMap = %v, want 🇭🇰 香港01→香港01 (2)", rm)
+		}
+		if got := groupProxies(groups[0]); !reflect.DeepEqual(got, []string{"DIRECT", "香港01", "香港01 (2)"}) {
+			t.Errorf("group proxies = %v", got)
+		}
+	})
+
+	t.Run("组 proxies 与节点名集合一致", func(t *testing.T) {
+		nodes := []map[string]any{node("🇭🇰 香港01"), node("🇯🇵 日本01"), node("香港01")}
+		groups := []map[string]any{
+			{"name": "手动选择", "type": "select", "proxies": []any{"DIRECT", "🇭🇰 香港01", "🇯🇵 日本01", "香港01"}},
+			{"name": "自动选择", "type": "url-test", "proxies": []any{"🇭🇰 香港01", "🇯🇵 日本01", "香港01"}},
+			{"name": "DIRECT", "type": "direct"},
+		}
+		ApplyStripEmoji(nodes, groups, true)
+		set := map[string]bool{}
+		for _, n := range nodes {
+			set[n["name"].(string)] = true
+		}
+		if !set["香港01"] || !set["香港01 (2)"] || !set["日本01"] {
+			t.Errorf("node set = %v, want 香港01/香港01 (2)/日本01", set)
+		}
+		for _, g := range groups {
+			for _, p := range groupProxies(g) {
+				if p == "DIRECT" {
+					continue
+				}
+				if !set[p] {
+					t.Errorf("group %v proxies entry %q 不在节点名集合 %v", g["name"], p, set)
+				}
+			}
+		}
+	})
+}

@@ -15,10 +15,14 @@ cleanup() {
   [ -n "$TOK_PID" ] && kill $TOK_PID 2>/dev/null
   [ -n "$HTTP_PID" ] && kill $HTTP_PID 2>/dev/null
   # go run 孤儿子进程（进程可能已退出，先判断 cmdline 可读再读，避免竞态警告）
+  # 孤儿 server 二进制在 go build 缓存里（go run 的子进程，PPid=1 不随父死），
+  # 用 readlink exe 匹配缓存路径——避免匹配调用方 cmdline 文本导致自杀（之前 head -c 100
+  # 截断导致匹配失败残留；后改 cmdline grep 又误杀含模式文本的调用方自身，两次教训）
   for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
-    [ -r /proc/$pid/cmdline ] || continue
-    cmdline=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null | head -c 100)
-    echo "$cmdline" | grep -q "go-build.*/server" && kill -9 $pid 2>/dev/null || true
+    exe=$(readlink /proc/$pid/exe 2>/dev/null) || continue
+    case "$exe" in
+      */.cache/go-build/*/server) kill -9 $pid 2>/dev/null || true ;;
+    esac
   done
 }
 trap cleanup EXIT
@@ -81,6 +85,13 @@ check "include=日本 剩2节点" "2" "$(curl -s "$BASE&include=%E6%97%A5%E6%9C%
 check "exclude=日本 剩5节点" "5" "$(curl -s "$BASE&exclude=%E6%97%A5%E6%9C%AC" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c ' name:')"
 check "rename 生效(2节点×3处)" "6" "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP" | grep -c 'JP0')"
 check "scv=true 5节点有scv" "5" "$(curl -s "$BASE&scv=true" | grep -c 'skip-cert-verify: true')"
+# 5.5 strip_emoji：yaml.v3 对补充平面字符（emoji）输出 \U0001Fxxx 转义，
+# grep 用转义序列（旗标均在 U+1F1E6-1F1FF，前缀 \U0001F1）
+# 基线：默认（开关关）proxies 段含 7 处旗标转义（证明 grep 模式有效）
+check "默认节点名旗标保留(基线)" "7" "$(curl -s "$BASE" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c '\\U0001F1')"
+check "strip_emoji 剥离旗标emoji" "0" "$(curl -s "$BASE&strip_emoji=true" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c '\\U0001F1')"
+check "strip_emoji 节点数不变" "7" "$(curl -s "$BASE&strip_emoji=true" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c ' name:')"
+check "strip_emoji 组名无emoji且存在" "1" "$(curl -s "$BASE&strip_emoji=true" | sed -n '/^proxy-groups:/,/^rules:/p' | grep -c -- 'name: 香港节点')"
 
 # 6. 错误路径
 check "缺参数 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SRV_PORT/sub")"

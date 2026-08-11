@@ -19,7 +19,7 @@ type RuleProvider struct {
 const ruleProviderInterval = 86400
 
 // defaultTargetGroup 是未指定 targetGroup 时的默认策略组名。
-const defaultTargetGroup = "🚀 手动选择"
+const defaultTargetGroup = "手动选择"
 
 // ValidateRuleProviderName 校验 rule-provider 名称：非空，且拒绝含 /、\、
 // 或 .. 的路径穿越名称（名称会拼进输出 YAML 的 rule-provider path，
@@ -42,7 +42,7 @@ func ValidateRuleProviderName(name string) error {
 // RULE-SET,<rp.Name>,<targetGroup>；没有 MATCH 行则追加到末尾。
 //
 //   - rps 为空 → 直接返回 nil（no-op，cfg 原样）。
-//   - targetGroup 为空串时用默认值「🚀 手动选择」。
+//   - targetGroup 为空串时用默认值「手动选择」。
 //   - 每个 rp 生成一个 http 型 rule-provider entry：
 //     {"type":"http","url":...,"behavior":...,"format":...,"interval":86400,
 //     "path":"./ruleset/<Name>.yaml"}。

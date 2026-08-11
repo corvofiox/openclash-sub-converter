@@ -7,7 +7,7 @@
 ## 1. 架构
 
 ```
-GET /sub?target=clash&url=...&include=&exclude=&rename=&config=
+GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
   → api.Server
   → fetcher.Fetch（自定义 UA / 超时 / 内存缓存 TTL / 失败跳过 / 多源 | 合并）
   → link.ParseSubscription（Base64 订阅 / Clash YAML 订阅 / 单链接）→ []map[string]any (Clash 条目)
@@ -37,7 +37,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&config=
 ## 3. HTTP API（兼容 subconverter 调用习惯）
 
 ```
-GET /sub?target=clash&url=<URLENCODE，多源用 | 分隔>&include=<regex>&exclude=<regex>&rename=<regex替换格式>&udp=true&tls13=true&scv=true&config=<模板URL>
+GET /sub?target=clash&url=<URLENCODE，多源用 | 分隔>&include=<regex>&exclude=<regex>&rename=<regex替换格式>&udp=true&tls13=true&scv=true&strip_emoji=true&config=<模板URL>
 GET /healthz           → 200 ok
 GET /version           → JSON {version, mihomo}
 ```
@@ -47,6 +47,7 @@ GET /version           → JSON {version, mihomo}
 - `rename` 格式：`<regex>/<replacement>`（subconverter 风格）或纯 Go regexp `replacement` 风格：统一采用 `<regex>/<replacement>`，未匹配的节点名保持不变。
 - `include`/`exclude`：Go regexp，对节点名匹配；include 命中保留，exclude 命中剔除（先 exclude 后 include）。
 - `scv=true` 输出节点 `skip-cert-verify: true`；`udp=true` 输出 `udp: true`；`tls13=true` 输出 `tls13: true`（SS/Trojan 系适用字段）。
+- `strip_emoji=true`（默认关）：输出阶段剥离节点名中的 emoji 字符（旗标/符号/VS16/ZWJ/键帽），保留空格与 `|` `｜` 等分隔符；地区识别始终基于原始节点名（与开关无关），剥离后重名自动追加序号并同步改写组引用。
 
 ## 4. 协议链接解析映射表（internal/link 核心）
 
@@ -100,16 +101,16 @@ GET /version           → JSON {version, mihomo}
 ## 5. 策略组构建（internal/groups）
 
 ```
-[🚀 手动选择] type=select, proxies=[DIRECT, 自动选择, 各地区组...]
-[♻️ 自动选择] type=url-test, url=<测速URL>, interval=300, proxies=[全部节点]
-[🌍 地区组]  按节点名识别地区（多源线索：emoji 国旗 / 中文(含繁体/城市) / 拼音 / 英文(含城市) / ISO 双字母，
-             取名字中第一个地区线索；🇭🇰/香港/HK-01→香港, 🇯🇵/日本/Tokyo-2→日本, 🇸🇬/新加坡/SG-01→新加坡...），
-             type=url-test, 组名「🇭🇰 香港节点」，proxies=[该地区节点]
-[未识别地区] 无任何地区线索的节点放入「🌐 其他节点」组
+[手动选择] type=select, proxies=[DIRECT, 自动选择, 各地区组...]
+[自动选择] type=url-test, url=<测速URL>, interval=300, proxies=[全部节点]
+[地区组]  按节点名识别地区（多源线索：emoji 国旗 / 中文(含繁体/城市) / 拼音 / 英文(含城市) / ISO 双字母，
+           取名字中第一个地区线索；🇭🇰/香港/HK-01→香港, 🇯🇵/日本/Tokyo-2→日本, 🇸🇬/新加坡/SG-01→新加坡...），
+           type=url-test, 组名「香港节点」，proxies=[该地区节点]
+[未识别地区] 无任何地区线索的节点放入「其他节点」组
 兜底组：[DIRECT] [REJECT]（内置）
 ```
 - emoji/中文/拼音/英文/ISO 五层别名表内置常量（47 地区，含无歧义城市名），一别名只映射一地区，全局唯一性有测试强制。
-- 组名格式固定 `「<emoji> <地区>节点」`（命名契约 v1），后续 M2 命名引擎接管。
+- 组名格式固定 `「<地区>节点」`（无 emoji，命名契约 v1），后续 M2 命名引擎接管。
 - 节点数 0 的地区不生成组。
 
 ## 6. 模板合并（internal/template）
@@ -131,7 +132,7 @@ proxies: <nodes>
 proxy-groups: <groups>
 rules:
   - GEOIP,CN,DIRECT
-  - MATCH,🚀 手动选择
+  - MATCH,手动选择
 ```
 外部 `config` 参数：支持 subconverter 风格 `.ini` 模板的**最小子集**（`[custom]` 段的 include/exclude/rename 忽略——由 URL 参数控制；仅读取分组/规则部分会复杂化，M1 不做），M1 仅支持 URL 参数方式。`config` 参数在 M1 返回 501 或忽略（设计：忽略 + warn 日志，README 注明 M2 支持）。
 

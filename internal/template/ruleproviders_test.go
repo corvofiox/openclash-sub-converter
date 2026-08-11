@@ -21,7 +21,7 @@ func sampleRPs() []RuleProvider {
 // baseRulesCfg 返回含 MATCH 行的最小配置。
 func baseRulesCfg() map[string]any {
 	return map[string]any{
-		"rules": []any{"GEOIP,CN,DIRECT", "MATCH,🚀 手动选择"},
+		"rules": []any{"GEOIP,CN,DIRECT", "MATCH,手动选择"},
 	}
 }
 
@@ -37,7 +37,7 @@ func TestApplyEmptyNoop(t *testing.T) {
 	if !reflect.DeepEqual(cfg, before) {
 		t.Errorf("空 rps 不应改动 cfg: got %+v, want %+v", cfg, before)
 	}
-	if err := ApplyRuleProviders(cfg, []RuleProvider{}, "🚀 手动选择"); err != nil {
+	if err := ApplyRuleProviders(cfg, []RuleProvider{}, "手动选择"); err != nil {
 		t.Fatalf("空切片 rps: %v", err)
 	}
 	if !reflect.DeepEqual(cfg, before) {
@@ -49,7 +49,7 @@ func TestApplyEmptyNoop(t *testing.T) {
 // 顺序保持。
 func TestInjectStructure(t *testing.T) {
 	cfg := baseRulesCfg()
-	if err := ApplyRuleProviders(cfg, sampleRPs(), "🚀 手动选择"); err != nil {
+	if err := ApplyRuleProviders(cfg, sampleRPs(), "手动选择"); err != nil {
 		t.Fatalf("ApplyRuleProviders: %v", err)
 	}
 
@@ -88,9 +88,9 @@ func TestInjectStructure(t *testing.T) {
 	}
 	wantRules := []any{
 		"GEOIP,CN,DIRECT",
-		"RULE-SET,cn-domains,🚀 手动选择",
-		"RULE-SET,cn-ips,🚀 手动选择",
-		"MATCH,🚀 手动选择",
+		"RULE-SET,cn-domains,手动选择",
+		"RULE-SET,cn-ips,手动选择",
+		"MATCH,手动选择",
 	}
 	if !reflect.DeepEqual(rules, wantRules) {
 		t.Errorf("rules = %v, want %v", rules, wantRules)
@@ -114,7 +114,7 @@ func TestNoMatchAppendsToEnd(t *testing.T) {
 	}
 }
 
-// TestDefaultTargetGroup targetGroup 空串 → 默认「🚀 手动选择」。
+// TestDefaultTargetGroup targetGroup 空串 → 默认「手动选择」。
 func TestDefaultTargetGroup(t *testing.T) {
 	cfg := baseRulesCfg()
 	if err := ApplyRuleProviders(cfg, sampleRPs(), ""); err != nil {
@@ -123,7 +123,7 @@ func TestDefaultTargetGroup(t *testing.T) {
 	rules := cfg["rules"].([]any)
 	for _, r := range rules {
 		line, _ := r.(string)
-		if strings.HasPrefix(line, "RULE-SET,") && !strings.HasSuffix(line, ",🚀 手动选择") {
+		if strings.HasPrefix(line, "RULE-SET,") && !strings.HasSuffix(line, ",手动选择") {
 			t.Errorf("RULE-SET 行目标组错误: %q", line)
 		}
 	}
@@ -199,7 +199,7 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 		},
 	}
 	groups := []map[string]any{
-		{"name": "🚀 手动选择", "type": "select", "proxies": []any{"ss-test"}},
+		{"name": "手动选择", "type": "select", "proxies": []any{"ss-test"}},
 		{"name": "DIRECT", "type": "direct"},
 	}
 	cfg, err := Build(nodes, groups, Options{})
@@ -222,15 +222,15 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 		t.Fatalf("mihomo UnmarshalRawConfig 校验失败: %v\n渲染结果:\n%s", err, data)
 	}
 	// 渲染产物包含 rule-providers 与 RULE-SET。
-	// 注意：yaml.v3 会把非 ASCII 字符（🚀）转义为 \U0001F680，因此这里只断言
-	// RULE-SET 行的 ASCII 前缀与 rule-providers 段结构。
+	// 注意：yaml.v3 只对补充平面字符（emoji）输出 \U 转义，CJK 直接输出；
+	// 此处断言 RULE-SET 行前缀与 rule-providers 段结构，完整行在下文反解析后核对。
 	s := string(data)
 	for _, want := range []string{"rule-providers:", "RULE-SET,cn-domains,", "./ruleset/cn-domains.yaml", "interval: 86400"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("渲染产物缺少 %q:\n%s", want, s)
 		}
 	}
-	// 反解析确认 RULE-SET 行完整（含默认目标组，转义形式 \U0001F680）
+	// 反解析确认 RULE-SET 行完整（含默认目标组 手动选择）
 	var back map[string]any
 	if err := yaml.Unmarshal(data, &back); err != nil {
 		t.Fatalf("re-parse rendered yaml: %v", err)
@@ -241,10 +241,10 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 	if !ok || len(rules) != 5 {
 		t.Fatalf("re-parsed rules = %T len %d, want []any len 5", back["rules"], len(rules))
 	}
-	if rules[1].(string) != "RULE-SET,cn-domains,🚀 手动选择" {
+	if rules[1].(string) != "RULE-SET,cn-domains,手动选择" {
 		t.Errorf("rules[1] = %q, want RULE-SET 完整行", rules[1])
 	}
-	if rules[4].(string) != "MATCH,🚀 手动选择" {
+	if rules[4].(string) != "MATCH,手动选择" {
 		t.Errorf("rules[4] = %q, want MATCH 在最后", rules[4])
 	}
 }

@@ -45,7 +45,7 @@ func TestBuildMixedRegions(t *testing.T) {
 		node("🇭🇰 香港 01"),
 		node("🇭🇰 香港 02"),
 		node("🇯🇵 日本 01"),
-		node("新加坡 01"),   // 无 emoji
+		node("新加坡 01"),   // 无 emoji 但文字识别 → 新加坡组
 		node("🇨🇳 大陆 01"), // 未知 emoji（中国不在映射表）
 	}
 	groups, err := Build(nodes)
@@ -57,7 +57,7 @@ func TestBuildMixedRegions(t *testing.T) {
 	if manual["type"] != "select" {
 		t.Errorf("manual type = %v, want select", manual["type"])
 	}
-	wantManual := []string{"DIRECT", GroupAuto, "🇭🇰 香港节点", "🇯🇵 日本节点", GroupOther}
+	wantManual := []string{"DIRECT", GroupAuto, "🇭🇰 香港节点", "🇯🇵 日本节点", "🇸🇬 新加坡节点", GroupOther}
 	if got := proxies(manual); !reflect.DeepEqual(got, wantManual) {
 		t.Errorf("manual proxies = %v, want %v", got, wantManual)
 	}
@@ -81,8 +81,13 @@ func TestBuildMixedRegions(t *testing.T) {
 		t.Errorf("JP proxies = %v", got)
 	}
 
+	sg := findGroup(t, groups, "🇸🇬 新加坡节点")
+	if got := proxies(sg); !reflect.DeepEqual(got, []string{"新加坡 01"}) {
+		t.Errorf("SG proxies = %v", got)
+	}
+
 	other := findGroup(t, groups, GroupOther)
-	if got := proxies(other); !reflect.DeepEqual(got, []string{"新加坡 01", "🇨🇳 大陆 01"}) {
+	if got := proxies(other); !reflect.DeepEqual(got, []string{"🇨🇳 大陆 01"}) {
 		t.Errorf("other proxies = %v", got)
 	}
 

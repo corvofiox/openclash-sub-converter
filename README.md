@@ -9,7 +9,7 @@ OpenClash 订阅转换工具是一个轻量级 HTTP 服务（Go 单二进制，�
 
 - **多源聚合**：一次请求拉取多个机场订阅（`|` 分隔），自动识别 Base64 订阅 / Clash YAML / 单条协议链接（ss、ssr、vmess、vless、trojan、hysteria2、hysteria、tuic、anytls、socks5、http）
 - **可控命名**：`include` / `exclude` / `rename` 正则过滤与重命名，节点名/策略组名完全可控，与 OpenClash 自定义规则命名契约对齐
-- **策略组自动构建**：手动选择 / 自动选择 / 按国旗 emoji 分地区组 / DIRECT、REJECT 兜底
+- **策略组自动构建**：手动选择 / 自动选择 / 按 emoji/中文/拼音/英文/ISO 代码自动识别地区并分组 / DIRECT、REJECT 兜底
 - **输出可靠**：YAML 渲染后调用 mihomo `config.UnmarshalRawConfig` 全量校验，保证 OpenClash 可直接消费
 - **安全**：订阅 URL 凭证不出现在日志与错误消息中（只记 host）；响应 `Cache-Control: no-store`
 

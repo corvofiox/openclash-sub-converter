@@ -102,12 +102,13 @@ GET /version           → JSON {version, mihomo}
 ```
 [🚀 手动选择] type=select, proxies=[DIRECT, 自动选择, 各地区组...]
 [♻️ 自动选择] type=url-test, url=<测速URL>, interval=300, proxies=[全部节点]
-[🌍 地区组]  按节点名首 emoji 国旗映射（🇭🇰→香港, 🇯🇵→日本, 🇸🇬→新加坡, 🇺🇸→美国, 🇹🇼→台湾, 🇰🇷→韩国, ...）,
+[🌍 地区组]  按节点名识别地区（多源线索：emoji 国旗 / 中文(含繁体/城市) / 拼音 / 英文(含城市) / ISO 双字母，
+             取名字中第一个地区线索；🇭🇰/香港/HK-01→香港, 🇯🇵/日本/Tokyo-2→日本, 🇸🇬/新加坡/SG-01→新加坡...），
              type=url-test, 组名「🇭🇰 香港节点」，proxies=[该地区节点]
-[未识别地区] 放入「🌐 其他节点」组
+[未识别地区] 无任何地区线索的节点放入「🌐 其他节点」组
 兜底组：[DIRECT] [REJECT]（内置）
 ```
-- emoji → 地区名映射表内置常量（覆盖主要国旗），映射表可被模板覆盖。
+- emoji/中文/拼音/英文/ISO 五层别名表内置常量（47 地区，含无歧义城市名），一别名只映射一地区，全局唯一性有测试强制。
 - 组名格式固定 `「<emoji> <地区>节点」`（命名契约 v1），后续 M2 命名引擎接管。
 - 节点数 0 的地区不生成组。
 
@@ -208,7 +209,7 @@ services:
 
 - `internal/link`: 每协议 ≥1 个黄金用例（真实格式链接→期望条目字段），非法输入用例。
 - `internal/transform`: include/exclude/rename 组合用例。
-- `internal/groups`: emoji 分组、零节点组跳过。
+- `internal/groups`: 多源识别分组（emoji/中文/拼音/英文/ISO）、零节点组跳过。
 - `internal/output`: 渲染→mihomo 校验通过；坏节点被剔除。
 - `internal/api`: httptest + httptest.Server 假订阅源（Base64 + YAML 两种），断言 200/400/500、Content-Type。
 - 端到端冒烟：`go run ./cmd/server` 起服务 → curl /sub 真实转换 → mihomo 校验。

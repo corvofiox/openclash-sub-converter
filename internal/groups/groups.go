@@ -1,4 +1,5 @@
-// Package groups 根据节点列表构建 Clash 策略组。
+// Package groups 根据节点列表构建 Clash 策略组（按 emoji/中文/拼音/英文/ISO 代码
+// 识别节点地区并分入同名地区组）。
 package groups
 
 import (
@@ -15,27 +16,6 @@ const (
 	GroupOther  = "🌐 其他节点"
 )
 
-// flagRegions 是 emoji 国旗 → 地区中文名映射表（有序切片保证确定性；
-// 同名字段优先级与输出顺序都依赖此顺序）。
-var flagRegions = []struct{ emoji, region string }{
-	{"🇭🇰", "香港"}, {"🇲🇴", "澳门"}, {"🇹🇼", "台湾"},
-	{"🇯🇵", "日本"}, {"🇰🇷", "韩国"}, {"🇸🇬", "新加坡"},
-	{"🇲🇾", "马来西亚"}, {"🇹🇭", "泰国"}, {"🇻🇳", "越南"},
-	{"🇮🇩", "印尼"}, {"🇵🇭", "菲律宾"}, {"🇮🇳", "印度"},
-	{"🇺🇸", "美国"}, {"🇨🇦", "加拿大"}, {"🇲🇽", "墨西哥"},
-	{"🇧🇷", "巴西"}, {"🇦🇺", "澳大利亚"}, {"🇳🇿", "新西兰"},
-	{"🇬🇧", "英国"}, {"🇫🇷", "法国"}, {"🇩🇪", "德国"},
-	{"🇳🇱", "荷兰"}, {"🇸🇪", "瑞典"}, {"🇫🇮", "芬兰"},
-	{"🇳🇴", "挪威"}, {"🇩🇰", "丹麦"}, {"🇮🇹", "意大利"},
-	{"🇪🇸", "西班牙"}, {"🇵🇹", "葡萄牙"}, {"🇹🇷", "土耳其"},
-	{"🇷🇺", "俄罗斯"}, {"🇦🇪", "阿联酋"}, {"🇮🇱", "以色列"},
-	{"🇿🇦", "南非"}, {"🇪🇬", "埃及"}, {"🇦🇷", "阿根廷"},
-	{"🇨🇱", "智利"}, {"🇵🇱", "波兰"}, {"🇨🇭", "瑞士"},
-	{"🇦🇹", "奥地利"}, {"🇧🇪", "比利时"}, {"🇨🇿", "捷克"},
-	{"🇬🇷", "希腊"}, {"🇭🇺", "匈牙利"}, {"🇮🇪", "爱尔兰"},
-	{"🇱🇺", "卢森堡"}, {"🇺🇦", "乌克兰"},
-}
-
 // regionGroup 是一个地区策略组的中间表示。
 type regionGroup struct {
 	emoji  string
@@ -47,9 +27,10 @@ type regionGroup struct {
 //
 //   - "🚀 手动选择" type=select，proxies=[DIRECT, ♻️ 自动选择, <地区组名...>]；
 //   - "♻️ 自动选择" type=url-test，proxies=[全部节点名]（去重）；
-//   - 地区组：按节点名中的 emoji 国旗映射地区，组名 "「emoji 地区」节点" 格式，
-//     type=url-test，url/interval 固定；节点数 0 的地区不生成组；
-//   - 无 emoji 或未知 emoji 的节点归入 "🌐 其他节点" 组；
+//   - 地区组：按节点名识别地区（emoji/中文/拼音/英文/ISO 代码五层线索，取名字中
+//     第一个地区线索），组名 "「emoji 地区」节点" 格式，type=url-test，
+//     url/interval 固定；节点数 0 的地区不生成组；
+//   - 无任何地区线索或无法识别的节点归入 "🌐 其他节点" 组；
 //   - 兜底组 "DIRECT"(type=direct) 与 "REJECT"(type=reject)。
 //
 // 节点名重复时去重（同一节点只进一个组）。空节点列表仍输出手动选择/自动选择/
@@ -152,18 +133,43 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 	return groups, nil
 }
 
-// regionOf 从节点名中提取第一个已知 emoji 国旗，返回其 emoji 与地区中文名。
+// regionOf 从节点名中提取"第一个地区线索"（emoji/中文/拼音/英文/ISO 代码，
+// 按字节位置最靠前者胜出；同位置高显式度层胜出；同位置同层别名更长者胜），
+// 返回命中地区的规范 emoji 与中文名——与命中别名/层无关，故混合 emoji/文字/ISO
+// 命名的节点自然并入同名组。识别不了返回 ok=false。
 func regionOf(name string) (emoji, region string, ok bool) {
-	bestIdx := -1
-	for _, fr := range flagRegions {
-		if idx := strings.Index(name, fr.emoji); idx >= 0 && (bestIdx < 0 || idx < bestIdx) {
-			bestIdx = idx
-			emoji = fr.emoji
-			region = fr.region
+	lower := strings.ToLower(name) // ASCII 小写等长，字节索引与 name 一致
+	bestIdx, bestLayer, bestAliasLen := -1, 0, 0
+	var best *regionInfo
+	for i := range regionInfos {
+		ri := &regionInfos[i]
+		if idx := strings.Index(name, ri.emoji); idx >= 0 && better(idx, layerEmoji, len(ri.emoji), bestIdx, bestLayer, bestAliasLen) {
+			best, bestIdx, bestLayer, bestAliasLen = ri, idx, layerEmoji, len(ri.emoji)
+		}
+		for _, a := range ri.zh { // 中文（原串子串，无边界）
+			if idx := strings.Index(name, a); idx >= 0 && better(idx, layerZH, len(a), bestIdx, bestLayer, bestAliasLen) {
+				best, bestIdx, bestLayer, bestAliasLen = ri, idx, layerZH, len(a)
+			}
+		}
+		for _, a := range ri.py { // 拼音（小写串 + token 边界）
+			if idx := tokenIndex(lower, a); idx >= 0 && better(idx, layerPY, len(a), bestIdx, bestLayer, bestAliasLen) {
+				best, bestIdx, bestLayer, bestAliasLen = ri, idx, layerPY, len(a)
+			}
+		}
+		for _, a := range ri.en { // 英文（小写串 + token 边界，含多词短语）
+			if idx := tokenIndex(lower, a); idx >= 0 && better(idx, layerEN, len(a), bestIdx, bestLayer, bestAliasLen) {
+				best, bestIdx, bestLayer, bestAliasLen = ri, idx, layerEN, len(a)
+			}
+		}
+		iso := strings.ToLower(ri.iso) // iso 字段为大写，须小写化后在小写串上匹配
+		if iso != isoDenyNo {          // ISO（小写串 + token 边界；"no" 入 denylist）
+			if idx := tokenIndex(lower, iso); idx >= 0 && better(idx, layerISO, len(iso), bestIdx, bestLayer, bestAliasLen) {
+				best, bestIdx, bestLayer, bestAliasLen = ri, idx, layerISO, len(iso)
+			}
 		}
 	}
-	if bestIdx < 0 {
+	if best == nil {
 		return "", "", false
 	}
-	return emoji, region, true
+	return best.emoji, best.region, true
 }

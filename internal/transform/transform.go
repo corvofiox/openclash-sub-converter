@@ -16,13 +16,20 @@ var ErrInvalidRegex = errors.New("invalid regex")
 
 // Filter 描述对节点列表的过滤/重命名规则。
 type Filter struct {
-	Rename  string // 格式 "<regex>/<replacement>", 用 "/" 分隔; 空串不重命名
+	Rename  string // 格式 "<regex>/<replacement>", 多条用 "," 分隔按顺序执行; 空串不重命名
 	Include string // 节点名正则, 命中才保留; 空串不过滤
 	Exclude string // 节点名正则, 命中剔除; 空串不过滤
 	// StripEmoji 为 true 时在输出阶段（groups.Build 之后）剥离节点名中的
 	// emoji 字符。不在 Apply 内执行：地区识别（groups.regionOf）必须基于
 	// 原始节点名，剥离统一放在 groups.Build 之后（见 ApplyStripEmoji）。
 	StripEmoji bool
+}
+
+// renameRule 表示一条 rename 规则：正则与替换串。多条规则按用户给定顺序
+// 依次应用（前一条的输出是后一条的输入）。
+type renameRule struct {
+	re   *regexp.Regexp
+	repl string
 }
 
 // Apply 依次执行 Exclude → Include → Rename，返回处理后的节点列表。
@@ -49,19 +56,27 @@ func Apply(nodes []map[string]any, f Filter) ([]map[string]any, error) {
 		}
 	}
 
-	// Rename 格式 "<regex>/<replacement>"，按第一个 "/" 分隔。
-	var renameRe *regexp.Regexp
-	renameRepl := ""
+	// Rename 支持多条 "<regex>/<replacement>" 规则，逗号分隔、顺序执行
+	// （前一条的输出作为后一条的输入）。每段按第一个 "/" 分隔；段首尾
+	// 空白被 TrimSpace 去除，空段（如尾逗号）跳过。
+	// 已知限制：正则内的字面逗号会被拆分，不支持转义。
+	var rules []renameRule
 	if f.Rename != "" {
-		idx := strings.Index(f.Rename, "/")
-		if idx < 0 {
-			return nil, fmt.Errorf("invalid rename rule %q: expected format <regex>/<replacement>: %w", f.Rename, ErrInvalidRegex)
+		for _, part := range strings.Split(f.Rename, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			idx := strings.Index(part, "/")
+			if idx < 0 {
+				return nil, fmt.Errorf("invalid rename rule %q: expected format <regex>/<replacement>: %w", part, ErrInvalidRegex)
+			}
+			re, err := regexp.Compile(part[:idx])
+			if err != nil {
+				return nil, fmt.Errorf("invalid rename regex %q: %w: %w", part[:idx], err, ErrInvalidRegex)
+			}
+			rules = append(rules, renameRule{re: re, repl: part[idx+1:]})
 		}
-		renameRe, err = regexp.Compile(f.Rename[:idx])
-		if err != nil {
-			return nil, fmt.Errorf("invalid rename regex %q: %w: %w", f.Rename[:idx], err, ErrInvalidRegex)
-		}
-		renameRepl = f.Rename[idx+1:]
 	}
 
 	out := make([]map[string]any, 0, len(nodes))
@@ -79,8 +94,8 @@ func Apply(nodes []map[string]any, f Filter) ([]map[string]any, error) {
 			continue
 		}
 		finalName := name
-		if renameRe != nil {
-			finalName = renameRe.ReplaceAllString(name, renameRepl)
+		for _, r := range rules {
+			finalName = r.re.ReplaceAllString(finalName, r.repl)
 		}
 		// 统一去重：无论是否 rename，同名节点都走 uniqueName（首个保留原名，
 		// 后续加 " (N)" 后缀）；rename 未命中时 uniqueName 返回原名，行为不变。

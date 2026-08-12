@@ -66,7 +66,7 @@ fi
 
 ENC="http%3A%2F%2F127.0.0.1%3A$SRC_PORT%2Fsub.b64"
 echo "=== P1-1: 混合订阅(1好+2坏) 转换结果 ==="
-curl -s -w "\nHTTP=%{http_code}\n" "http://127.0.0.1:$SRV_PORT/sub?target=clash&url=$ENC" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep ' name:'
+curl -s -w "\nHTTP=%{http_code}\n" "http://127.0.0.1:$SRV_PORT/sub?target=clash&url=$ENC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep ' name:'
 echo "=== 服务日志 WARN(坏节点跳过) ==="
 grep 'skip invalid proxy node' $WORK/server.log | head -4
 grep -c 'skip invalid proxy node' $WORK/server.log

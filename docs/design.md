@@ -44,7 +44,7 @@ GET /version           → JSON {version, mihomo}
 
 - `target` 仅支持 `clash`，其余返回 400。
 - `url` 必填。支持：Base64 订阅 / Clash YAML / 单条链接。
-- `rename` 格式：`<regex>/<replacement>`（subconverter 风格）或纯 Go regexp `replacement` 风格：统一采用 `<regex>/<replacement>`，未匹配的节点名保持不变。
+- `rename` 格式：`<regex>/<replacement>`，未匹配的节点名保持不变；多条规则用逗号分隔（`日本/JP,香港/HK`）按顺序执行（前一条的输出是后一条的输入）。已知限制：正则内的字面逗号会被拆分，不支持转义。
 - `include`/`exclude`：Go regexp，对节点名匹配；include 命中保留，exclude 命中剔除（先 exclude 后 include）。
 - `scv=true` 输出节点 `skip-cert-verify: true`；`udp=true` 输出 `udp: true`；`tls13=true` 输出 `tls13: true`（SS/Trojan 系适用字段）。
 - `strip_emoji=true`（默认关）：输出阶段剥离节点名中的 emoji 字符（旗标/符号/VS16/ZWJ/键帽），保留空格与 `|` `｜` 等分隔符；地区识别始终基于原始节点名（与开关无关），剥离后重名自动追加序号并同步改写组引用。
@@ -129,8 +129,8 @@ dns:
   enhanced-mode: fake-ip
   nameserver: [223.5.5.5, 119.29.29.29]
   fallback: [tls://8.8.8.8, tls://1.1.1.1]
-proxies: <nodes>
 proxy-groups: <groups>
+proxies: <nodes>
 rules:
   - GEOIP,CN,DIRECT
   - MATCH,手动选择

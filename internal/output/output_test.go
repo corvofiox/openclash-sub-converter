@@ -147,3 +147,67 @@ func TestValidateRejectsInvalidYAML(t *testing.T) {
 		t.Fatal("expected Validate to fail for invalid yaml, but it passed")
 	}
 }
+
+// TestRenderKeyOrder 断言渲染产物顶层键序（R3）：dns < proxy-groups < proxies < rules，
+// 即 proxy-groups 段在 proxies 段之前；rule-providers 注入后位于 rules 之前。
+func TestRenderKeyOrder(t *testing.T) {
+	keyPos := func(data []byte) map[string]int {
+		t.Helper()
+		var root yaml.Node
+		if err := yaml.Unmarshal(data, &root); err != nil {
+			t.Fatalf("unmarshal rendered yaml: %v", err)
+		}
+		if root.Kind != yaml.DocumentNode || len(root.Content) != 1 {
+			t.Fatalf("root = kind %d content %d, want document with 1 child", root.Kind, len(root.Content))
+		}
+		m := root.Content[0]
+		if m.Kind != yaml.MappingNode {
+			t.Fatalf("root child = kind %d, want mapping", m.Kind)
+		}
+		pos := make(map[string]int)
+		for i := 0; i+1 < len(m.Content); i += 2 {
+			pos[m.Content[i].Value] = i / 2
+		}
+		return pos
+	}
+	order := []string{"mixed-port", "allow-lan", "mode", "log-level", "ipv6", "dns", "proxy-groups", "proxies", "rules"}
+	pos := keyPos(mustRender(t, validConfig()))
+	for i := 1; i < len(order); i++ {
+		prev, ok1 := pos[order[i-1]]
+		cur, ok2 := pos[order[i]]
+		if !ok1 || !ok2 {
+			t.Fatalf("key %q missing from rendered output, pos=%v", order[i], pos)
+		}
+		if prev >= cur {
+			t.Errorf("key order: %q (pos %d) 应位于 %q (pos %d) 之前", order[i-1], prev, order[i], cur)
+		}
+	}
+
+	// rule-providers 注入后位于 proxy-groups 与 rules 之间（rules 之前）
+	cfg := validConfig()
+	cfg["rule-providers"] = map[string]any{
+		"cn": map[string]any{"type": "http", "url": "https://example.com/cn.yaml", "interval": 86400},
+	}
+	pos = keyPos(mustRender(t, cfg))
+	if pos["proxy-groups"] >= pos["rule-providers"] || pos["rule-providers"] >= pos["rules"] {
+		t.Errorf("rule-providers 应位于 proxy-groups 与 rules 之间: %v", pos)
+	}
+
+	// 兜底：topKeyOrder 未覆盖的键按字典序追加在末尾
+	cfg = validConfig()
+	cfg["zzz-extra"] = "x"
+	cfg["aaa-extra"] = "y"
+	pos = keyPos(mustRender(t, cfg))
+	if pos["aaa-extra"] <= pos["rules"] || pos["zzz-extra"] <= pos["aaa-extra"] {
+		t.Errorf("未覆盖键应字典序追加在末尾: %v", pos)
+	}
+}
+
+func mustRender(t *testing.T, cfg map[string]any) []byte {
+	t.Helper()
+	data, err := Render(cfg)
+	if err != nil {
+		t.Fatalf("Render failed: %v", err)
+	}
+	return data
+}

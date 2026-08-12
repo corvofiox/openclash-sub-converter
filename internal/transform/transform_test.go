@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -297,4 +298,68 @@ func TestApplyStripEmoji(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestApplyRenameMultiRule 断言多条 rename 规则（逗号分隔）各自命中对应节点，
+// 未命中的节点保持原名。
+func TestApplyRenameMultiRule(t *testing.T) {
+	nodes := []map[string]any{node("香港 01"), node("台湾 01"), node("日本 01")}
+	out, err := Apply(nodes, Filter{Rename: "^香港/HK,^台湾/TW"})
+	if err != nil {
+		t.Fatalf("Apply error: %v", err)
+	}
+	if got := names(out); !reflect.DeepEqual(got, []string{"HK 01", "TW 01", "日本 01"}) {
+		t.Errorf("names = %v, want [HK 01 TW 01 日本 01]", got)
+	}
+}
+
+// TestApplyRenameMultiRuleSequential 断言多条规则顺序执行：前一条的输出是后一条的输入。
+func TestApplyRenameMultiRuleSequential(t *testing.T) {
+	nodes := []map[string]any{node("日本 01"), node("香港 01")}
+	out, err := Apply(nodes, Filter{Rename: "日本/JP,^JP/NIP"})
+	if err != nil {
+		t.Fatalf("Apply error: %v", err)
+	}
+	// "日本 01" 先变 "JP 01"，再被 "^JP" 命中变 "NIP 01"
+	if got := names(out); !reflect.DeepEqual(got, []string{"NIP 01", "香港 01"}) {
+		t.Errorf("names = %v, want [NIP 01 香港 01]", got)
+	}
+}
+
+// TestApplyRenameMultiRuleTrailingComma 断言尾逗号/空段被跳过（"日本/JP," 合法）。
+func TestApplyRenameMultiRuleTrailingComma(t *testing.T) {
+	nodes := []map[string]any{node("日本 01"), node("香港 01")}
+	out, err := Apply(nodes, Filter{Rename: "日本/JP,"})
+	if err != nil {
+		t.Fatalf("Apply error: %v", err)
+	}
+	if got := names(out); !reflect.DeepEqual(got, []string{"JP 01", "香港 01"}) {
+		t.Errorf("names = %v, want [JP 01 香港 01]", got)
+	}
+}
+
+// TestApplyRenameMultiRuleInvalid 断言任一规则非法 → 整体 ErrInvalidRegex（不部分生效），
+// 且错误消息指向出错的规则原文（part 而非整个参数）。
+func TestApplyRenameMultiRuleInvalid(t *testing.T) {
+	nodes := []map[string]any{node("x")}
+	cases := []struct {
+		rename  string
+		wantMsg string
+	}{
+		{"日本/JP,香港", `invalid rename rule "香港"`}, // 第二条缺 "/"，消息带规则原文
+		{"日本/JP,[/x", "invalid rename regex"},    // 第二条正则编译失败
+	}
+	for _, tc := range cases {
+		_, err := Apply(nodes, Filter{Rename: tc.rename})
+		if err == nil {
+			t.Errorf("Apply(%q) = nil error, want ErrInvalidRegex", tc.rename)
+			continue
+		}
+		if !errors.Is(err, ErrInvalidRegex) {
+			t.Errorf("Apply(%q) error = %v, want ErrInvalidRegex", tc.rename, err)
+		}
+		if !strings.Contains(err.Error(), tc.wantMsg) {
+			t.Errorf("Apply(%q) error %q 未包含 %q", tc.rename, err, tc.wantMsg)
+		}
+	}
 }

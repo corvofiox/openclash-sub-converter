@@ -567,3 +567,29 @@ func TestSubStripEmojiDupNames(t *testing.T) {
 		}
 	}
 }
+
+// TestSubRenameMultiRule 断言 rename 多规则（逗号分隔）经 /sub 全链路生效，
+// 且任一规则非法 → 整体 400（不部分生效）。
+func TestSubRenameMultiRule(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+
+	// 两条规则各自命中：日本-01→JP-01，香港-01→HK-01
+	rec := do(h, subQuery(src.URL, map[string]string{"rename": "日本-01/JP01,香港-01/HK01"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "JP01") || !strings.Contains(body, "HK01") {
+		t.Errorf("rename 多规则未全部生效:\n%s", body)
+	}
+	if strings.Contains(body, "日本-01") || strings.Contains(body, "香港-01") {
+		t.Errorf("rename 多规则后原节点名残留:\n%s", body)
+	}
+
+	// 第二条规则非法（缺 "/"）→ 整体 400
+	rec = do(h, subQuery(src.URL, map[string]string{"rename": "日本-01/JP01,香港-01"}))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid multi-rule rename: status = %d, want 400", rec.Code)
+	}
+}

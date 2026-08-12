@@ -58,13 +58,13 @@ GET /sub?target=clash&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=
 | `url` | 是 | 订阅源地址（http/https）；多源用 `\|` 分隔（URL 中编码为 `%7C`）；任一源失败不影响其他源，全部失败返回 502 |
 | `include` | 否 | Go 正则，节点名命中才保留 |
 | `exclude` | 否 | Go 正则，节点名命中剔除（先 exclude 后 include） |
-| `rename` | 否 | `<regex>/<replacement>` 格式重命名节点 |
+| `rename` | 否 | `<regex>/<replacement>` 重命名；多条用 `,` 分隔按顺序执行（前一条输出为后一条输入），如 `日本/JP,香港/HK`；正则内字面逗号会被拆分（不支持转义） |
 | `udp` | 否 | `true`/`1` 时节点输出 `udp: true` |
 | `tls13` | 否 | `true`/`1` 时 ss/trojan/http 节点输出 `tls13: true` |
 | `scv` | 否 | `true`/`1` 时 vmess/vless/trojan/hysteria2/tuic/anytls 节点输出 `skip-cert-verify: true` |
 | `strip_emoji` | 否 | `true`/`1` 时节点名剥离 emoji（旗标/符号/VS16/ZWJ；保留空格与分隔符；剥离后重名自动加序号；识别仍基于原始名） |
 
-成功响应：`200`，`Content-Type: text/yaml; charset=utf-8`，`Cache-Control: no-store`，body 为完整 Clash YAML（mixed-port 7893、allow-lan、fake-ip DNS、proxies、proxy-groups、GEOIP,CN,DIRECT + MATCH 规则）。
+成功响应：`200`，`Content-Type: text/yaml; charset=utf-8`，`Cache-Control: no-store`，body 为完整 Clash YAML（mixed-port 7893、allow-lan、fake-ip DNS、proxy-groups、proxies、GEOIP,CN,DIRECT + MATCH 规则，proxy-groups 段在 proxies 段之前）。
 
 示例（OpenClash 配置订阅 URL 可直接填此链接）：
 

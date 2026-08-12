@@ -68,34 +68,43 @@ check() {
   if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "✅ $1 (=$2)";
   else FAIL=$((FAIL+1)); echo "❌ $1 (期望 $2 实际 $3)"; fi
 }
-# 节点计数: 匹配 " name:" 行(排除 servername:), 覆盖 2/4 空格缩进
-NODES() { sed -n '/^proxies:/,/^proxy-groups:/p' "$1" | grep -c ' name:'; }
-GROUPS() { sed -n '/^proxy-groups:/,/^rules:/p' "$1" | grep -c ' name:'; }
+# 节点计数: 匹配 " name:" 行(排除 servername:), 覆盖 2/4 空格缩进。
+# awk 按顶层键切段（段序无关）：命中起始键置 f，下一个顶层键即段尾——
+# 新段序 proxy-groups 在 proxies 前，sed 相邻范围不再可靠。
+NODES() { awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' "$1" | grep -c ' name:'; }
+GROUPS() { awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' "$1" | grep -c ' name:'; }
 
 # 4. 基础转换
 curl -s -o $WORK/out1.yaml -w "%{http_code}" "$BASE" > $WORK/code.txt
 check "基础转换 HTTP 200" "200" "$(cat $WORK/code.txt)"
 check "节点数 7" "7" "$(NODES $WORK/out1.yaml)"
 check "组数 8" "8" "$(GROUPS $WORK/out1.yaml)"
+# R3 段序契约：proxy-groups 在 proxies 前（mihomo 对段落顺序无要求，固定顺序保证产物确定性）
+PG_LN=$(grep -n '^proxy-groups:' $WORK/out1.yaml | cut -d: -f1)
+PX_LN=$(grep -n '^proxies:' $WORK/out1.yaml | cut -d: -f1)
+check "段序 proxy-groups 在 proxies 前" "1" "$([ -n "$PG_LN" ] && [ -n "$PX_LN" ] && [ "$PG_LN" -lt "$PX_LN" ] && echo 1 || echo 0)"
 # 回归：DIRECT/REJECT 是 Clash 内置出站，不得生成空组声明（mihomo 校验 proxy-groups
 # 要求每个组有 proxies/use，内置出站名也无豁免，实测报 'use' or 'proxies' missing）
 check "无 DIRECT 兜底组声明" "0" "$(grep -c -- '- name: DIRECT' $WORK/out1.yaml)"
 check "无 REJECT 兜底组声明" "0" "$(grep -c -- '- name: REJECT' $WORK/out1.yaml)"
-check "手动选择组存在" "1" "$(sed -n '/^proxy-groups:/,/^rules:/p' $WORK/out1.yaml | grep -c '手动选择')"
+check "手动选择组存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out1.yaml | grep -c '手动选择')"
 check "vless reality 节点" "1" "$(grep -c 'reality-opts' $WORK/out1.yaml)"
 
 # 5. 参数
-check "include=日本 剩2节点" "2" "$(curl -s "$BASE&include=%E6%97%A5%E6%9C%AC" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c ' name:')"
-check "exclude=日本 剩5节点" "5" "$(curl -s "$BASE&exclude=%E6%97%A5%E6%9C%AC" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c ' name:')"
+check "include=日本 剩2节点" "2" "$(curl -s "$BASE&include=%E6%97%A5%E6%9C%AC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
+check "exclude=日本 剩5节点" "5" "$(curl -s "$BASE&exclude=%E6%97%A5%E6%9C%AC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
 check "rename 生效(2节点×3处)" "6" "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP" | grep -c 'JP0')"
+# R1 rename 多规则（逗号分隔顺序执行）：日本→JP 与 香港→HK 各自命中（计数 ≥1）
+check "rename 多规则 JP0≥1" "1" "$([ "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP,%E9%A6%99%E6%B8%AF/HK" | grep -c 'JP0')" -ge 1 ] && echo 1 || echo 0)"
+check "rename 多规则 HK0≥1" "1" "$([ "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP,%E9%A6%99%E6%B8%AF/HK" | grep -c 'HK0')" -ge 1 ] && echo 1 || echo 0)"
 check "scv=true 5节点有scv" "5" "$(curl -s "$BASE&scv=true" | grep -c 'skip-cert-verify: true')"
 # 5.5 strip_emoji：yaml.v3 对补充平面字符（emoji）输出 \U0001Fxxx 转义，
 # grep 用转义序列（旗标均在 U+1F1E6-1F1FF，前缀 \U0001F1）
 # 基线：默认（开关关）proxies 段含 7 处旗标转义（证明 grep 模式有效）
-check "默认节点名旗标保留(基线)" "7" "$(curl -s "$BASE" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c '\\U0001F1')"
-check "strip_emoji 剥离旗标emoji" "0" "$(curl -s "$BASE&strip_emoji=true" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c '\\U0001F1')"
-check "strip_emoji 节点数不变" "7" "$(curl -s "$BASE&strip_emoji=true" | sed -n '/^proxies:/,/^proxy-groups:/p' | grep -c ' name:')"
-check "strip_emoji 组名无emoji且存在" "1" "$(curl -s "$BASE&strip_emoji=true" | sed -n '/^proxy-groups:/,/^rules:/p' | grep -c -- 'name: 香港节点')"
+check "默认节点名旗标保留(基线)" "7" "$(curl -s "$BASE" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c '\\U0001F1')"
+check "strip_emoji 剥离旗标emoji" "0" "$(curl -s "$BASE&strip_emoji=true" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c '\\U0001F1')"
+check "strip_emoji 节点数不变" "7" "$(curl -s "$BASE&strip_emoji=true" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
+check "strip_emoji 组名无emoji且存在" "1" "$(curl -s "$BASE&strip_emoji=true" | awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c -- 'name: 香港节点')"
 
 # 6. 错误路径
 check "缺参数 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SRV_PORT/sub")"

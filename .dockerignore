@@ -1,0 +1,7 @@
+# 构建上下文精简
+.git
+.cache
+data
+smoke_artifacts
+*.log
+/tmp

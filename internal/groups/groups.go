@@ -30,10 +30,11 @@ type regionGroup struct {
 //     第一个地区线索），组名 "<地区>节点" 格式，type=url-test，
 //     url/interval 固定；节点数 0 的地区不生成组；
 //   - 无任何地区线索或无法识别的节点归入 "其他节点" 组；
-//   - 兜底组 "DIRECT"(type=direct) 与 "REJECT"(type=reject)。
+//   - DIRECT/REJECT 为 Clash 内置出站，不在 proxy-groups 里声明——空组声明会被
+//     mihomo 判为非法（'use' or 'proxies' missing，内置出站名也无豁免）；
+//     手动选择组 proxies 与 rules 中直接引用即可。
 //
-// 节点名重复时去重（同一节点只进一个组）。空节点列表仍输出手动选择/自动选择/
-// DIRECT/REJECT，不报错。
+// 节点名重复时去重（同一节点只进一个组）。空节点列表仍输出手动选择/自动选择，不报错。
 func Build(nodes []map[string]any) ([]map[string]any, error) {
 	seenName := make(map[string]bool)
 	var allNames []string
@@ -66,7 +67,7 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 
 	// 收集组名（地区组按首次出现顺序，其他节点组放最后）。
 	manualProxies := []any{"DIRECT", GroupAuto}
-	groups := make([]map[string]any, 0, 3+len(regions)+2)
+	groups := make([]map[string]any, 0, 3+len(regions))
 
 	// 1. 手动选择（先收集组名，故先建地区组再填 proxies）
 	autoProxies := make([]any, 0, len(allNames))
@@ -124,11 +125,6 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 	}
 	groups = append([]map[string]any{manual}, groups...)
 
-	// 6. 兜底组
-	groups = append(groups,
-		map[string]any{"name": "DIRECT", "type": "direct"},
-		map[string]any{"name": "REJECT", "type": "reject"},
-	)
 	return groups, nil
 }
 

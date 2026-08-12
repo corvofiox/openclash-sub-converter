@@ -13,7 +13,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
   → link.ParseSubscription（Base64 订阅 / Clash YAML 订阅 / 单链接）→ []map[string]any (Clash 条目)
   → adapter.ParseProxy 逐条校验（失败跳过+告警日志）→ 规范节点列表
   → transform.Filter + transform.Rename（正则 include/exclude/rename）
-  → groups.Build（手动选择/自动选择/地区组 select|url-test + DIRECT/REJECT 兜底）
+  → groups.Build（手动选择/自动选择/地区组 select|url-test；DIRECT/REJECT 内置出站直接引用、不生成组声明）
   → template.Merge（内置默认模板 / 外部 config 模板）
   → output.Render（YAML 序列化）
   → config.UnmarshalRawConfig 全量校验（失败则 500）
@@ -107,7 +107,8 @@ GET /version           → JSON {version, mihomo}
            取名字中第一个地区线索；🇭🇰/香港/HK-01→香港, 🇯🇵/日本/Tokyo-2→日本, 🇸🇬/新加坡/SG-01→新加坡...），
            type=url-test, 组名「香港节点」，proxies=[该地区节点]
 [未识别地区] 无任何地区线索的节点放入「其他节点」组
-兜底组：[DIRECT] [REJECT]（内置）
+内置出站：[DIRECT] [REJECT]（Clash 内置出站，手动选择组 proxies 与 rules 中直接引用即可，
+        不生成空组声明——空组会被 mihomo 判非法：'use' or 'proxies' missing）
 ```
 - emoji/中文/拼音/英文/ISO 五层别名表内置常量（47 地区，含无歧义城市名），一别名只映射一地区，全局唯一性有测试强制。
 - 组名格式固定 `「<地区>节点」`（无 emoji，命名契约 v1），后续 M2 命名引擎接管。

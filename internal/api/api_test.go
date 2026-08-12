@@ -463,7 +463,7 @@ func TestSubStripEmoji(t *testing.T) {
 	for _, g := range groups {
 		groupNames[g.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"手动选择", "自动选择", "香港节点", "日本节点", "DIRECT", "REJECT"} {
+	for _, want := range []string{"手动选择", "自动选择", "香港节点", "日本节点"} {
 		if !groupNames[want] {
 			t.Errorf("group names = %v, want 含 %s", groupNames, want)
 		}

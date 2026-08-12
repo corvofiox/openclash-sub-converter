@@ -76,7 +76,11 @@ GROUPS() { sed -n '/^proxy-groups:/,/^rules:/p' "$1" | grep -c ' name:'; }
 curl -s -o $WORK/out1.yaml -w "%{http_code}" "$BASE" > $WORK/code.txt
 check "基础转换 HTTP 200" "200" "$(cat $WORK/code.txt)"
 check "节点数 7" "7" "$(NODES $WORK/out1.yaml)"
-check "组数 10" "10" "$(GROUPS $WORK/out1.yaml)"
+check "组数 8" "8" "$(GROUPS $WORK/out1.yaml)"
+# 回归：DIRECT/REJECT 是 Clash 内置出站，不得生成空组声明（mihomo 校验 proxy-groups
+# 要求每个组有 proxies/use，内置出站名也无豁免，实测报 'use' or 'proxies' missing）
+check "无 DIRECT 兜底组声明" "0" "$(grep -c -- '- name: DIRECT' $WORK/out1.yaml)"
+check "无 REJECT 兜底组声明" "0" "$(grep -c -- '- name: REJECT' $WORK/out1.yaml)"
 check "手动选择组存在" "1" "$(sed -n '/^proxy-groups:/,/^rules:/p' $WORK/out1.yaml | grep -c '手动选择')"
 check "vless reality 节点" "1" "$(grep -c 'reality-opts' $WORK/out1.yaml)"
 

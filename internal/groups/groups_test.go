@@ -91,14 +91,7 @@ func TestBuildMixedRegions(t *testing.T) {
 		t.Errorf("other proxies = %v", got)
 	}
 
-	direct := findGroup(t, groups, "DIRECT")
-	if direct["type"] != "direct" {
-		t.Errorf("DIRECT type = %v, want direct", direct["type"])
-	}
-	reject := findGroup(t, groups, "REJECT")
-	if reject["type"] != "reject" {
-		t.Errorf("REJECT type = %v, want reject", reject["type"])
-	}
+	// DIRECT/REJECT 是 Clash 内置出站：不生成组声明，但手动选择组 proxies 仍引用 DIRECT（见上）
 }
 
 func TestBuildMoreRegions(t *testing.T) {
@@ -149,8 +142,8 @@ func TestBuildEmptyNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build(nil) error: %v", err)
 	}
-	if got := groupNames(groups); !reflect.DeepEqual(got, []string{GroupManual, GroupAuto, "DIRECT", "REJECT"}) {
-		t.Errorf("groups = %v, want [%s %s DIRECT REJECT]", got, GroupManual, GroupAuto)
+	if got := groupNames(groups); !reflect.DeepEqual(got, []string{GroupManual, GroupAuto}) {
+		t.Errorf("groups = %v, want [%s %s]", got, GroupManual, GroupAuto)
 	}
 	manual := findGroup(t, groups, GroupManual)
 	if got := proxies(manual); !reflect.DeepEqual(got, []string{"DIRECT", GroupAuto}) {

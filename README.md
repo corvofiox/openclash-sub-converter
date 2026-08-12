@@ -49,13 +49,14 @@ go run ./cmd/server            # 读取 ./config/config.yaml（缺失则用默�
 ### `GET /sub` — 订阅转换（兼容 subconverter 调用习惯）
 
 ```
-GET /sub?target=clash&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=&strip_emoji=
+GET /sub?target=clash&src=<ID1,ID2>&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=&strip_emoji=
 ```
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `target` | 是 | 仅支持 `clash`，其他值返回 400 |
-| `url` | 是 | 订阅源地址（http/https）；多源用 `\|` 分隔（URL 中编码为 `%7C`）；任一源失败不影响其他源，全部失败返回 502 |
+| `url` | 否 | 订阅源地址（http/https）；多源用 `\|` 分隔（URL 中编码为 `%7C`）；可与 `src` 混合聚合（已存源在前、url 源在后）；任一源失败不影响其他源，全部失败返回 502 |
+| `src` | 否 | 已保存订阅源 ID，逗号分隔多值（如 `src=a1b2c3d4e5f6,g7h8...`）；重复 ID 合并一次；任一 ID 不存在或已禁用返回 400（消息含该 ID）；可与 `url` 混合聚合 |
 | `include` | 否 | Go 正则，节点名命中才保留 |
 | `exclude` | 否 | Go 正则，节点名命中剔除（先 exclude 后 include） |
 | `rename` | 否 | `<regex>/<replacement>` 重命名；多条用 `,` 分隔按顺序执行（前一条输出为后一条输入），如 `日本/JP,香港/HK`；正则内字面逗号会被拆分（不支持转义） |
@@ -77,7 +78,7 @@ http://192.168.10.10:25500/sub?target=clash&url=https%3A%2F%2Fexample.com%2Fsub1
 
 | 状态码 | 场景 |
 |--------|------|
-| 400 | 参数缺失/非法（target、url、正则等） |
+| 400 | 参数缺失/非法（target、url、src、正则等） |
 | 502 | 所有订阅源拉取/解析失败（错误消息只含源 host） |
 | 500 | 转换、渲染或 mihomo 校验失败 |
 

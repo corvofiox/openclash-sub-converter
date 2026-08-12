@@ -22,6 +22,9 @@ cleanup() {
     exe=$(readlink /proc/$pid/exe 2>/dev/null) || continue
     case "$exe" in
       */.cache/go-build/*/server) kill -9 $pid 2>/dev/null || true ;;
+      # Go 1.26 go run 的临时构建产物在 /tmp/go-build*/b001/exe/server（readlink exe
+      # 精确匹配，与 .cache 分支同规——勿放宽为 cmdline 文本/pkill 宽匹配）
+      */go-build*/*/exe/server) kill -9 $pid 2>/dev/null || true ;;
     esac
   done
   rm -rf cmd/validate_tmp  # P2-4: set -e 校验失败提前退出也不残留 main.go
@@ -362,6 +365,40 @@ check "P2-2 重复 id 去重 rule-providers 1 条" "1" "$(grep -c 'path: ./rules
 check "P2-1 模板名含逗号 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"Netflix,cn","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/templates)"
 check "P2-1 模板名含换行 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"a\nb","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/templates)"
 
+
+# 7.10 R4 数据源多选聚合：src 逗号多值 / 无效 ID 400 / src+url 混合 /
+# convert source_ids 系列 / 日志逗号多值 / retry 多源恢复
+SRC2_CODE=$(curl -s -o $WORK/create2.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"冒烟源2\",\"url\":\"$SUB_URL\",\"enabled\":true}" \
+  http://127.0.0.1:$SRV_PORT/api/v1/sources)
+check "R4 创建订阅源2 201" "201" "$SRC2_CODE"
+SRC2_ID=$(python3 -c 'import json;print(json.load(open("'$WORK'/create2.json"))["source"]["id"])')
+check "R4 src=ID1,ID2 聚合 200" "200" "$(curl -s -o $WORK/out_src2.yaml -w '%{http_code}' \
+  "http://127.0.0.1:$SRV_PORT/sub?target=clash&src=$SRC_ID,$SRC2_ID")"
+check "R4 src 多值节点数 14" "14" "$(NODES $WORK/out_src2.yaml)"
+check "R4 src 无效 ID 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' \
+  "http://127.0.0.1:$SRV_PORT/sub?target=clash&src=$SRC_ID,deadbeef0000")"
+check "R4 src 纯逗号 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' \
+  "http://127.0.0.1:$SRV_PORT/sub?target=clash&src=%2C%2C")"
+curl -s -o $WORK/out_mix.yaml -w "%{http_code}" \
+  "http://127.0.0.1:$SRV_PORT/sub?target=clash&src=$SRC_ID,$SRC2_ID&url=$ENC" > $WORK/code_mix.txt
+check "R4 src+url 混合 200" "200" "$(cat $WORK/code_mix.txt)"
+check "R4 src+url 混合节点数 21" "21" "$(NODES $WORK/out_mix.yaml)"
+SRCIDS_JSON=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d "{\"source_ids\":[\"$SRC_ID\",\"$SRC2_ID\"]}" http://127.0.0.1:$SRV_PORT/api/v1/convert/preview)
+check "R4 convert source_ids 聚合 node_count 14" "14" "$(echo "$SRCIDS_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["node_count"])')"
+check "R4 日志 source_id 逗号多值" "1" "$(curl -s 'http://127.0.0.1:'$SRV_PORT'/api/v1/logs?limit=1' | python3 -c "import json,sys;print(1 if json.load(sys.stdin)['logs'][0]['source_id']=='$SRC_ID,$SRC2_ID' else 0)")"
+MS_LOG_ID=$(curl -s 'http://127.0.0.1:'$SRV_PORT'/api/v1/logs?limit=1' | python3 -c 'import json,sys;print(json.load(sys.stdin)["logs"][0]["id"])')
+check "R4 retry 多源日志 200" "200" "$(curl -s -o $WORK/retry_ms.json -w '%{http_code}' -X POST \
+  http://127.0.0.1:$SRV_PORT/api/v1/logs/$MS_LOG_ID/retry)"
+check "R4 retry 多源 node_count 14" "14" "$(python3 -c 'import json;print(json.load(open("'$WORK'/retry_ms.json"))["node_count"])')"
+check "R4 convert source_id+source_ids 并存 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"source_id\":\"$SRC_ID\",\"source_ids\":[\"$SRC2_ID\"]}" http://127.0.0.1:$SRV_PORT/api/v1/convert/preview)"
+check "R4 convert 全空 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{}' http://127.0.0.1:$SRV_PORT/api/v1/convert/preview)"
+MIX_JSON=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d "{\"source_ids\":[\"$SRC_ID\"],\"url\":\"$SUB_URL\"}" http://127.0.0.1:$SRV_PORT/api/v1/convert/preview)
+check "R4 convert source_ids+url 混合 node_count 14" "14" "$(echo "$MIX_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["node_count"])')"
 # disabled / 不存在 / 多值任一非法 → 400；无模板输出无 rule-providers 段（A7）
 curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
   -d '{"enabled":false}' http://127.0.0.1:$SRV_PORT/api/v1/templates/$TPL1 > $WORK/code_dis.txt

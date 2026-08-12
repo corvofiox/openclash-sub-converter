@@ -3,7 +3,11 @@
 
 const $ = (sel) => document.querySelector(sel);
 const TOKEN_KEY = 'osc_token';
-const state = { editingSourceId: null, editingTemplateId: null, tplBehavior: null, tplFormat: null };
+const state = {
+  editingSourceId: null, editingTemplateId: null, tplBehavior: null, tplFormat: null,
+  srcOptions: [], tplOptions: [],            // 已加载的启用选项（卡片渲染数据源）
+  selectedSources: new Set(), selectedTpls: new Set(), // 选中 ID 集合
+};
 
 /* ---------------- 通用工具 ---------------- */
 
@@ -291,27 +295,131 @@ $('#sourceRows').addEventListener('change', async (e) => {
 
 /* ---------------- 订阅转换 ---------------- */
 
+// hostOfURL 提取 URL host 作为卡片 meta（Source 结构无节点数字段，不造假）
+function hostOfURL(u) {
+  try { return new URL(u).host; } catch (e) { return ''; }
+}
+
+// pruneSelection 移除已不存在（被删除/禁用）的选项 id，保持选中集合有效
+function pruneSelection(sel, validIds) {
+  const valid = new Set(validIds);
+  for (const id of [...sel]) if (!valid.has(id)) sel.delete(id);
+}
+
+// R4 统一卡片选择器（数据源 + 模板同组件，变体A 玻璃拟态）：
+// 渲染卡片网格 → 点击 toggle 选中（.on 高亮 + ✓ 角标）→ 摘要条实时刷新
 async function loadConvertOptions() {
   try {
     const [sd, td] = await Promise.all([
       apiJSON('/api/v1/sources'), apiJSON('/api/v1/templates'),
     ]);
-    const srcs = (sd.sources || []).filter((s) => s.enabled);
-    $('#convSource').innerHTML = srcs.length
-      ? '<option value="">请选择订阅源</option>' + srcs.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')
-      : '<option value="">（暂无启用的订阅源）</option>';
-    // R4：模板多选 checkbox 区（仅 enabled）；勾选结果 join(',') 赋 template_id
-    const tpls = (td.templates || []).filter((t) => t.enabled);
-    $('#convTplBox').innerHTML = tpls.length
-      ? tpls.map((t) => `<label class="inline"><input type="checkbox" class="conv-tpl" value="${esc(t.id)}"> ${esc(t.name)}</label>`).join('')
-      : '<span class="hint">（无启用的模板）</span>';
-  } catch (e) { /* 顶部 badge 已提示鉴权问题 */ }
+    state.srcOptions = (sd.sources || []).filter((s) => s.enabled);
+    state.tplOptions = (td.templates || []).filter((t) => t.enabled);
+    pruneSelection(state.selectedSources, state.srcOptions.map((s) => s.id));
+    pruneSelection(state.selectedTpls, state.tplOptions.map((t) => t.id));
+    renderSrcGrid();
+    renderTplGrid();
+  } catch (e) {
+    // P2：失败时网格不能永久卡占位——给出可感知的失败提示（鉴权失败仍由顶部 badge 提示）
+    $('#convSrcGrid').innerHTML = '<span class="hint">加载失败，请刷新重试</span>';
+    $('#convTplGrid').innerHTML = '<span class="hint">加载失败，请刷新重试</span>';
+    toast('数据源/模板加载失败：' + (e && e.message ? e.message : String(e)), true);
+  }
 }
 
-// 临时 URL 折叠展开时互斥下拉
-$('#tempUrlWrap').addEventListener('toggle', () => {
-  $('#convSource').disabled = $('#tempUrlWrap').open;
+function renderSrcGrid() {
+  const grid = $('#convSrcGrid');
+  const list = state.srcOptions;
+  grid.innerHTML = list.length
+    ? list.map((s) => `
+      <div class="pick${state.selectedSources.has(s.id) ? ' on' : ''}" data-id="${esc(s.id)}" role="button" tabindex="0" title="${esc(s.name)}">
+        <span class="pick-check">✓</span>
+        <span class="pick-name">${esc(s.name)}</span>
+        <span class="pick-meta">${esc(hostOfURL(s.url) || '—')}</span>
+      </div>`).join('')
+    : '<span class="hint">（暂无启用的订阅源）</span>';
+  updateSrcSummary();
+}
+
+function renderTplGrid() {
+  const grid = $('#convTplGrid');
+  const list = state.tplOptions;
+  grid.innerHTML = list.length
+    ? list.map((t) => `
+      <div class="pick${state.selectedTpls.has(t.id) ? ' on' : ''}" data-id="${esc(t.id)}" role="button" tabindex="0" title="${esc(t.name)}">
+        <span class="pick-check">✓</span>
+        <span class="pick-name">${esc(t.name)}</span>
+        <span class="pick-meta">${esc(t.format || '')}${t.url ? ' · ' + esc(hostOfURL(t.url)) : ''}</span>
+      </div>`).join('')
+    : '<span class="hint">（无启用的模板）</span>';
+  updateTplSummary();
+}
+
+// 摘要条：已选 N 项 + 可单独移除的 chips
+function updateSrcSummary() {
+  const sel = state.srcOptions.filter((s) => state.selectedSources.has(s.id));
+  $('#convSrcSummary').innerHTML = sel.length
+    ? `已选 ${sel.length} 项 ` + sel.map((s) => `<span class="chip">${esc(s.name)}<span class="chip-x" data-kind="src" data-id="${esc(s.id)}">×</span></span>`).join('')
+    : '未选择';
+}
+
+function updateTplSummary() {
+  const sel = state.tplOptions.filter((t) => state.selectedTpls.has(t.id));
+  $('#convTplSummary').innerHTML = sel.length
+    ? `已选 ${sel.length} 项 ` + sel.map((t) => `<span class="chip">${esc(t.name)}<span class="chip-x" data-kind="tpl" data-id="${esc(t.id)}">×</span></span>`).join('')
+    : '未选择';
+}
+
+// 卡片点击 toggle（事件委托）；chips 的 × 单独移除
+$('#convSrcGrid').addEventListener('click', (e) => {
+  const card = e.target.closest('.pick');
+  if (!card) return;
+  const id = card.dataset.id;
+  if (state.selectedSources.has(id)) state.selectedSources.delete(id); else state.selectedSources.add(id);
+  renderSrcGrid();
 });
+// 键盘可达性（P2）：卡片 role=button + tabindex=0，Enter/Space 触发与 click 相同的 toggle
+$('#convSrcGrid').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('.pick');
+  if (!card) return;
+  e.preventDefault(); // 阻止 Space 滚动页面
+  const id = card.dataset.id;
+  if (state.selectedSources.has(id)) state.selectedSources.delete(id); else state.selectedSources.add(id);
+  renderSrcGrid();
+});
+$('#convTplGrid').addEventListener('click', (e) => {
+  const card = e.target.closest('.pick');
+  if (!card) return;
+  const id = card.dataset.id;
+  if (state.selectedTpls.has(id)) state.selectedTpls.delete(id); else state.selectedTpls.add(id);
+  renderTplGrid();
+});
+$('#convTplGrid').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('.pick');
+  if (!card) return;
+  e.preventDefault();
+  const id = card.dataset.id;
+  if (state.selectedTpls.has(id)) state.selectedTpls.delete(id); else state.selectedTpls.add(id);
+  renderTplGrid();
+});
+$('#convSrcSummary').addEventListener('click', (e) => {
+  const x = e.target.closest('.chip-x');
+  if (!x) return;
+  state.selectedSources.delete(x.dataset.id);
+  renderSrcGrid();
+});
+$('#convTplSummary').addEventListener('click', (e) => {
+  const x = e.target.closest('.chip-x');
+  if (!x) return;
+  state.selectedTpls.delete(x.dataset.id);
+  renderTplGrid();
+});
+$('#btnSrcAll').onclick = () => { state.srcOptions.forEach((s) => state.selectedSources.add(s.id)); renderSrcGrid(); };
+$('#btnSrcClear').onclick = () => { state.selectedSources.clear(); renderSrcGrid(); };
+$('#btnTplAll').onclick = () => { state.tplOptions.forEach((t) => state.selectedTpls.add(t.id)); renderTplGrid(); };
+$('#btnTplClear').onclick = () => { state.selectedTpls.clear(); renderTplGrid(); };
 
 function convertBody() {
   const body = {
@@ -323,15 +431,13 @@ function convertBody() {
     scv: $('#convScv').checked,
     strip_emoji: $('#convStripEmoji').checked,
   };
-  const tpls = [...document.querySelectorAll('.conv-tpl:checked')].map((c) => c.value);
+  const tpls = [...state.selectedTpls];
   if (tpls.length) body.template_id = tpls.join(',');
-  if ($('#tempUrlWrap').open && $('#convUrl').value.trim()) {
-    body.url = $('#convUrl').value.trim();
-  } else {
-    const srcId = $('#convSource').value;
-    if (!srcId) throw new Error('请选择订阅源或填写临时 URL');
-    body.source_id = srcId;
-  }
+  const srcIds = [...state.selectedSources];
+  const urlVal = $('#tempUrlWrap').open ? $('#convUrl').value.trim() : '';
+  if (!srcIds.length && !urlVal) throw new Error('请选择数据源或填写临时 URL');
+  if (srcIds.length) body.source_ids = srcIds; // 多选数组；可与 url 并存（混合聚合）
+  if (urlVal) body.url = urlVal;
   return body;
 }
 
@@ -355,13 +461,11 @@ function renderPreview(data) {
 function genSubLink() {
   const q = new URLSearchParams();
   q.set('target', 'clash');
-  if ($('#tempUrlWrap').open && $('#convUrl').value.trim()) {
-    q.set('url', $('#convUrl').value.trim());
-  } else {
-    const srcId = $('#convSource').value;
-    if (!srcId) throw new Error('请选择订阅源或填写临时 URL');
-    q.set('src', srcId);
-  }
+  const srcIds = [...state.selectedSources];
+  const urlVal = $('#tempUrlWrap').open ? $('#convUrl').value.trim() : '';
+  if (!srcIds.length && !urlVal) throw new Error('请选择数据源或填写临时 URL');
+  if (srcIds.length) q.set('src', srcIds.join(',')); // 逗号多值；可与 url 并存（混合聚合）
+  if (urlVal) q.set('url', urlVal);
   const inc = $('#convInclude').value.trim();
   const exc = $('#convExclude').value.trim();
   const ren = $('#convRename').value.trim();
@@ -372,7 +476,7 @@ function genSubLink() {
   if ($('#convTls13').checked) q.set('tls13', 'true');
   if ($('#convScv').checked) q.set('scv', 'true');
   if ($('#convStripEmoji').checked) q.set('strip_emoji', 'true');
-  const tpls = [...document.querySelectorAll('.conv-tpl:checked')].map((c) => c.value);
+  const tpls = [...state.selectedTpls];
   if (tpls.length) q.set('template_id', tpls.join(','));
   // window.location.host 已含端口（如 192.168.1.5:25500）；协议跟随当前页面
   // （http/https），避免硬编码 http:// 在反代 TLS 场景下生成错误链接

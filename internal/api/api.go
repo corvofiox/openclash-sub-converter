@@ -290,9 +290,10 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 //	  → ApplyStripEmoji（strip_emoji=true 时剥离节点名 emoji）→ template.Build
 //	  → output.Render → output.Validate（YAML 语法层）
 //
-// 参数：target 必须为 "clash"；url 必填（多个源用 | 分隔）或 src=<订阅源ID>
-// 二选一（同时存在 src 优先，凭证不进 URL）；include/exclude/rename 为可选
-// 正则；udp/tls13/scv/strip_emoji 取值 "true"/"1" 视为 true。
+// 参数：target 必须为 "clash"；数据源 = src=<ID1,ID2>（逗号多值，重复 ID 合并）
+// 与/或 url=（多个源用 | 分隔），二者可混合聚合（已存源在前、url 源在后，
+// 凭证不进 URL）；include/exclude/rename 为可选正则；udp/tls13/scv/
+// strip_emoji 取值 "true"/"1" 视为 true。
 // strip_emoji=true 时在输出阶段剥离节点名中的 emoji（识别仍基于原始名）。
 //
 // 错误映射：参数错误 400（含非法 url 结构、src 不可用、正则非法）；所有源
@@ -307,7 +308,9 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 数据源解析：src=<订阅源ID> 优先，否则 url=（多个源用 | 分隔）
+	// R4 数据源解析：src=<ID1,ID2> 逗号多值（重复 ID 合并一次），可与 url=
+	// （多个源用 | 分隔）混合聚合——已存源在前、临时 url 源在后；两者皆缺 → 400。
+	// 任一 src ID 不存在或禁用 → 400 且消息含该 ID（s.st==nil 时保持原消息）。
 	var sources []string
 	var srcID, srcName, urlFull string
 	if srcParam := q.Get("src"); srcParam != "" {
@@ -315,30 +318,40 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 			s.logSubError(w, r, start, "src 引用的订阅源不可用", srcParam, "", "", q)
 			return
 		}
-		src, ok := s.st.GetSource(srcParam)
-		if !ok || !src.Enabled {
-			s.logSubError(w, r, start, "src 引用的订阅源不可用", srcParam, "", "", q)
+		ids := splitIDs(srcParam)
+		if len(ids) == 0 {
+			s.logSubError(w, r, start, "src 参数未包含任何订阅源 ID", srcParam, "", "", q)
 			return
 		}
-		sources = []string{src.URL}
-		srcID, srcName = src.ID, src.Name
-	} else {
-		rawURL := q.Get("url")
-		if rawURL == "" {
-			s.logSubError(w, r, start, "missing required parameter: url", "", "", "", q)
+		urls, idsOut, names, badID, ok := resolveSourceIDs(s.st, ids)
+		if !ok {
+			msg := "src 引用的订阅源不可用"
+			if badID != "" {
+				msg += ": " + badID
+			}
+			s.logSubError(w, r, start, msg, srcParam, "", "", q)
 			return
 		}
-		sources = splitSources(rawURL)
-		if len(sources) == 0 {
-			s.logSubError(w, r, start, "url parameter contains no subscription sources", "", "", rawURL, q)
+		sources = append(sources, urls...)
+		srcID, srcName = idsOut, names // 逗号多值（顺序 = 参数顺序，重复已合并）
+	}
+	if rawURL := q.Get("url"); rawURL != "" {
+		urlSrcs := splitSources(rawURL)
+		if len(urlSrcs) == 0 {
+			s.logSubError(w, r, start, "url parameter contains no subscription sources", srcID, srcName, rawURL, q)
 			return
 		}
 		// BUG 修复：结构非法（不可解析/非 http/https/无 host）→ 400 客户端错误
-		if err := validateSources(sources); err != nil {
-			s.logSubError(w, r, start, err.Error(), "", "", rawURL, q)
+		if err := validateSources(urlSrcs); err != nil {
+			s.logSubError(w, r, start, err.Error(), srcID, srcName, rawURL, q)
 			return
 		}
+		sources = append(sources, urlSrcs...)
 		urlFull = rawURL // 临时 url= 参数才存完整 URL（retry 用）
+	}
+	if len(sources) == 0 {
+		s.logSubError(w, r, start, "missing required parameter: src or url", "", "", "", q)
+		return
 	}
 
 	filter := transform.Filter{
@@ -389,16 +402,17 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 
 // convertRequest 是 /api/v1/convert/preview 与 /api/v1/convert/run 的 JSON 请求体。
 type convertRequest struct {
-	SourceID   *string `json:"source_id"` // 与 URL 二选一（同时存在 source_id 优先）
-	URL        *string `json:"url"`       // 临时订阅 URL（可含 | 多源）
-	Include    string  `json:"include"`
-	Exclude    string  `json:"exclude"`
-	Rename     string  `json:"rename"`
-	UDP        *bool   `json:"udp"`
-	TLS13      *bool   `json:"tls13"`
-	SCV        *bool   `json:"scv"`
-	StripEmoji *bool   `json:"strip_emoji"`
-	TemplateID string  `json:"template_id"`
+	SourceID   *string  `json:"source_id"`  // 单值兼容（与 source_ids 并存 → 400）
+	SourceIDs  []string `json:"source_ids"` // 数组多值；空数组视为未提供
+	URL        *string  `json:"url"`        // 临时订阅 URL（可含 | 多源），可与上两者混合
+	Include    string   `json:"include"`
+	Exclude    string   `json:"exclude"`
+	Rename     string   `json:"rename"`
+	UDP        *bool    `json:"udp"`
+	TLS13      *bool    `json:"tls13"`
+	SCV        *bool    `json:"scv"`
+	StripEmoji *bool    `json:"strip_emoji"`
+	TemplateID string   `json:"template_id"`
 }
 
 // handleConvert 是 convert 端点（preview/run）的公共实现。
@@ -417,31 +431,55 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 			return
 		}
 
-		// 数据源二选一：source_id 优先，否则 url（临时）
+		// R4 数据源解析：source_ids（数组多值）与 source_id（单值兼容）二选一，
+		// 可与 url（临时）混合聚合——已存源在前、url 源在后；全部为空 → 400。
 		var sources []string
 		var srcID, srcName, urlFull string
-		switch {
-		case req.SourceID != nil && *req.SourceID != "":
-			src, ok := s.st.GetSource(*req.SourceID)
-			if !ok || !src.Enabled {
-				writeJSONError(w, http.StatusBadRequest, "订阅源不存在或已禁用")
+		sid := ""
+		if req.SourceID != nil {
+			sid = *req.SourceID
+		}
+		sids := make([]string, 0, len(req.SourceIDs))
+		for _, id := range req.SourceIDs {
+			if id = strings.TrimSpace(id); id != "" {
+				sids = append(sids, id)
+			}
+		}
+		if sid != "" && len(sids) > 0 {
+			writeJSONError(w, http.StatusBadRequest, "source_id 与 source_ids 不能同时指定")
+			return
+		}
+		if sid != "" {
+			sids = []string{sid}
+		}
+		if len(sids) > 0 {
+			urls, idsOut, names, badID, ok := resolveSourceIDs(s.st, sids)
+			if !ok {
+				msg := "订阅源不存在或已禁用"
+				if badID != "" {
+					msg += ": " + badID
+				}
+				writeJSONError(w, http.StatusBadRequest, msg)
 				return
 			}
-			sources = []string{src.URL}
-			srcID, srcName = src.ID, src.Name
-		case req.URL != nil && *req.URL != "":
-			sources = splitSources(*req.URL)
-			if len(sources) == 0 {
+			sources = append(sources, urls...)
+			srcID, srcName = idsOut, names
+		}
+		if req.URL != nil && *req.URL != "" {
+			urlSrcs := splitSources(*req.URL)
+			if len(urlSrcs) == 0 {
 				writeJSONError(w, http.StatusBadRequest, "url 不包含任何订阅源")
 				return
 			}
-			if err := validateSources(sources); err != nil {
+			if err := validateSources(urlSrcs); err != nil {
 				writeJSONError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+			sources = append(sources, urlSrcs...)
 			urlFull = *req.URL
-		default:
-			writeJSONError(w, http.StatusBadRequest, "source_id 与 url 必须二选一")
+		}
+		if len(sources) == 0 {
+			writeJSONError(w, http.StatusBadRequest, "请指定 source_id/source_ids 或 url")
 			return
 		}
 
@@ -526,35 +564,47 @@ func (s *server) handleLogRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R4 多源恢复：SourceID（逗号多值）逐 ID 校验后与 URLFull（临时 url 部分）
+	// 顺序合并——已存源在前、url 源在后；任一源已删/禁用 → 409；两者皆缺 → 400。
 	var sources []string
-	var rawURL, srcID, srcName string
-	switch {
-	case entry.SourceID != "":
-		src, ok := s.st.GetSource(entry.SourceID)
-		if !ok {
-			writeJSONError(w, http.StatusConflict, "订阅源已删除")
-			return
+	var rawURL string
+	if entry.SourceID != "" {
+		// 重复 ID 去重：与 /sub、convert 的 resolveSourceIDs 合并语义一致
+		// （日志 src=a,a → 同一源只拉一次）；仍保留「已删除/已禁用」两种 409 消息
+		seen := make(map[string]bool)
+		for _, id := range splitIDs(entry.SourceID) {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			src, ok := s.st.GetSource(id)
+			if !ok {
+				writeJSONError(w, http.StatusConflict, "订阅源已删除")
+				return
+			}
+			if !src.Enabled {
+				writeJSONError(w, http.StatusConflict, "订阅源已禁用")
+				return
+			}
+			sources = append(sources, src.URL)
 		}
-		if !src.Enabled {
-			writeJSONError(w, http.StatusConflict, "订阅源已禁用")
-			return
-		}
-		rawURL, srcID, srcName = src.URL, src.ID, src.Name
-		sources = []string{rawURL}
-	case entry.URLFull != "":
+	}
+	if entry.URLFull != "" {
 		// 多源临时 URL：与 /sub、convert 入口一致，先拆分再校验（非法 → 400），
 		// 避免把含 | 的原始串直接交给 runPipeline（逐源 Fetch 前不拆分 → 502）。
-		sources = splitSources(entry.URLFull)
-		if len(sources) == 0 {
+		urlSrcs := splitSources(entry.URLFull)
+		if len(urlSrcs) == 0 {
 			writeJSONError(w, http.StatusBadRequest, "临时 URL 不可重试")
 			return
 		}
-		if err := validateSources(sources); err != nil {
+		if err := validateSources(urlSrcs); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		sources = append(sources, urlSrcs...)
 		rawURL = entry.URLFull
-	default:
+	}
+	if len(sources) == 0 {
 		writeJSONError(w, http.StatusBadRequest, "临时 URL 不可重试")
 		return
 	}
@@ -582,10 +632,10 @@ func (s *server) handleLogRetry(w http.ResponseWriter, r *http.Request) {
 	res, perr := s.runPipeline(r, sources, filter, opts, tpls, false)
 	s.appendLog(store.LogEntry{
 		Kind:        "preview",
-		SourceID:    srcID,
-		SourceName:  srcName,
-		URLRedacted: redactURL(rawURL), // 重新脱敏：源 URL 已更新时展示与实际一致
-		URLFull:     entry.URLFull,     // 保留原临时 URL（src 场景为空）
+		SourceID:    entry.SourceID, // 逗号多值原样保留
+		SourceName:  entry.SourceName,
+		URLRedacted: redactURL(urlFullOrSources(rawURL, sources)), // 重新脱敏：源 URL 已更新时展示与实际一致
+		URLFull:     entry.URLFull,                                // 保留原临时 URL（src 场景为空）
 		Params:      entry.Params,
 		Status:      statusOf(perr),
 		Error:       errOf(perr),
@@ -958,6 +1008,44 @@ func splitSources(raw string) []string {
 		}
 	}
 	return out
+}
+
+// splitIDs 按逗号拆分 ID 列表，去空白与空项（与 template_id 解析一致）。
+func splitIDs(raw string) []string {
+	var out []string
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// resolveSourceIDs 逐个校验订阅源 ID（存在且启用），返回按参数顺序的 URL
+// 列表与逗号拼接的 ID/名称（重复 ID 合并一次）。任一不存在或禁用 →
+// ok=false 且 badID 为该 ID；st == nil 时 badID 为空（调用方保持原错误消息）。
+// handleSub 与 handleConvert 共用；handleSub 中 s.st==nil 检查保持在调用前。
+func resolveSourceIDs(st *store.Store, ids []string) (urls []string, idList, nameList, badID string, ok bool) {
+	if st == nil {
+		return nil, "", "", "", false
+	}
+	seen := make(map[string]bool, len(ids))
+	idsOut := make([]string, 0, len(ids))
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		src, found := st.GetSource(id)
+		if !found || !src.Enabled {
+			return nil, "", "", id, false
+		}
+		urls = append(urls, src.URL)
+		idsOut = append(idsOut, src.ID)
+		names = append(names, src.Name)
+	}
+	return urls, strings.Join(idsOut, ","), strings.Join(names, ","), "", true
 }
 
 // validateSources 校验订阅源 URL 结构：必须可解析、scheme 为 http/https 且

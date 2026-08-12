@@ -1072,3 +1072,417 @@ func TestLogRetryTemplateMulti(t *testing.T) {
 		t.Errorf("retry log params template_id = %q, want %q", got, ids)
 	}
 }
+
+// ---------- R4：数据源多选聚合 ----------
+
+// proxyNamesOrdered 解析 YAML 产物并返回 proxies 节点名（按产物顺序）。
+func proxyNamesOrdered(t *testing.T, data []byte) []string {
+	t.Helper()
+	var cfg map[string]any
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("not valid yaml: %v", err)
+	}
+	proxies, ok := cfg["proxies"].([]any)
+	if !ok {
+		t.Fatalf("proxies = %T, want list", cfg["proxies"])
+	}
+	names := make([]string, 0, len(proxies))
+	for _, p := range proxies {
+		names = append(names, p.(map[string]any)["name"].(string))
+	}
+	return names
+}
+
+// TestSubMultiSource（R4 验收 A1）：src=a,b 逗号多值 → 两源节点聚合输出；
+// src=单 ID 与旧行为一致（单源输出）。
+func TestSubMultiSource(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	srcA := fakeSource(t, http.StatusOK, subBody()) // 2 节点（香港/日本）
+	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	srcB := fakeSource(t, http.StatusOK, fmt.Sprintf("ss://%s@example.com:8388#🇺🇸 美国-01\n", ui)) // 1 节点
+	a, err := st.CreateSource("机场A", srcA.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource A: %v", err)
+	}
+	b, err := st.CreateSource("机场B", srcB.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource B: %v", err)
+	}
+
+	// 多值聚合
+	rec := do(h, "/sub?target=clash&src="+a.ID+","+b.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("multi src: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	names := proxyNamesOrdered(t, rec.Body.Bytes())
+	if len(names) != 3 {
+		t.Fatalf("multi src proxies = %v, want 3 节点（两源聚合）", names)
+	}
+	want := map[string]bool{"🇭🇰 香港-01": true, "🇯🇵 日本-01": true, "🇺🇸 美国-01": true}
+	for _, n := range names {
+		if !want[n] {
+			t.Errorf("multi src 意外节点 %q，聚合结果 %v", n, names)
+		}
+	}
+
+	// 单 ID 兼容（旧行为不变）
+	rec = do(h, "/sub?target=clash&src="+a.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("single src: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	names = proxyNamesOrdered(t, rec.Body.Bytes())
+	if len(names) != 2 {
+		t.Fatalf("single src proxies = %v, want 2 节点", names)
+	}
+
+	// 重复 ID 合并一次（a,a → 只有 a 的节点）
+	rec = do(h, "/sub?target=clash&src="+a.ID+","+a.ID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dup src: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	names = proxyNamesOrdered(t, rec.Body.Bytes())
+	if len(names) != 2 {
+		t.Fatalf("dup src proxies = %v, want 2 节点（重复 ID 合并）", names)
+	}
+}
+
+// TestSubSrcInvalidID（R4 验收 A2）：任一 ID 不存在/禁用 → 400 且消息含该 ID；
+// 纯逗号/空参 → 400；空段被去空（a,,b 正常聚合）。
+func TestSubSrcInvalidID(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	a, err := st.CreateSource("机场A", src.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource A: %v", err)
+	}
+	dis, err := st.CreateSource("禁用源", src.URL, false)
+	if err != nil {
+		t.Fatalf("CreateSource disabled: %v", err)
+	}
+
+	// 多值中任一不存在 → 400 且消息含 badID
+	rec := do(h, "/sub?target=clash&src="+a.ID+",deadbeef0000")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "deadbeef0000") {
+		t.Errorf("multi with missing id: status = %d body=%s, want 400 含 deadbeef0000", rec.Code, rec.Body.String())
+	}
+	// 单值不存在 → 400 含 ID
+	rec = do(h, "/sub?target=clash&src=deadbeef0000")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "deadbeef0000") {
+		t.Errorf("missing id: status = %d body=%s, want 400 含 deadbeef0000", rec.Code, rec.Body.String())
+	}
+	// 禁用 → 400 含 ID
+	rec = do(h, "/sub?target=clash&src="+dis.ID)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), dis.ID) {
+		t.Errorf("disabled id: status = %d body=%s, want 400 含 %s", rec.Code, rec.Body.String(), dis.ID)
+	}
+	// 纯逗号（无任何 ID）→ 400
+	rec = do(h, "/sub?target=clash&src=%2C%2C")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("pure comma: status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	// 空段去空：a,,b 与 a,b 等价
+	rec = do(h, "/sub?target=clash&src="+a.ID+",,")
+	if rec.Code != http.StatusOK {
+		t.Errorf("trailing empty segment: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// 无 store 实例 → 400（原消息不带 ID）
+	h2 := newTestServerNoStore(t)
+	rec = do(h2, "/sub?target=clash&src=x")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("no-store src: status = %d, want 400", rec.Code)
+	}
+}
+
+// TestSubSrcPlusURL（R4 验收 A3）：src=a,b & url=... → 混合聚合，已存源在前、
+// url 源在后（不再互斥）。
+func TestSubSrcPlusURL(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	srcA := fakeSource(t, http.StatusOK, subBody()) // 香港/日本
+	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	srcB := fakeSource(t, http.StatusOK, fmt.Sprintf("ss://%s@example.com:8388#🇺🇸 美国-01\n", ui))
+	srcU := fakeSource(t, http.StatusOK, fmt.Sprintf("ss://%s@example.com:8388#🇩🇪 德国-01\n", ui))
+	a, err := st.CreateSource("机场A", srcA.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource A: %v", err)
+	}
+	b, err := st.CreateSource("机场B", srcB.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource B: %v", err)
+	}
+
+	vals := url.Values{}
+	vals.Set("target", "clash")
+	vals.Set("src", a.ID+","+b.ID)
+	vals.Set("url", srcU.URL)
+	rec := do(h, "/sub?"+vals.Encode())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("src+url mixed: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	names := proxyNamesOrdered(t, rec.Body.Bytes())
+	want := []string{"🇭🇰 香港-01", "🇯🇵 日本-01", "🇺🇸 美国-01", "🇩🇪 德国-01"}
+	if len(names) != len(want) {
+		t.Fatalf("mixed proxies = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Errorf("mixed 顺序 = %v, want %v（已存源在前、url 源在后）", names, want)
+			break
+		}
+	}
+}
+
+// TestConvertSourceIDs（R4 验收 A4）：source_ids=[a,b] 聚合；source_id 单值兼容；
+// 并存 → 400；全空/空数组 → 400；空数组 + url 正常；任一非法 → 400。
+func TestConvertSourceIDs(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	srcA := fakeSource(t, http.StatusOK, subBody())
+	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	srcB := fakeSource(t, http.StatusOK, fmt.Sprintf("ss://%s@example.com:8388#🇺🇸 美国-01\n", ui))
+	a, err := st.CreateSource("机场A", srcA.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource A: %v", err)
+	}
+	b, err := st.CreateSource("机场B", srcB.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource B: %v", err)
+	}
+
+	// source_ids 数组多值 → 聚合
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_ids":[%q,%q]}`, a.ID, b.ID), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("source_ids preview: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var pv struct {
+		NodeCount int `json:"node_count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pv); err != nil || pv.NodeCount != 3 {
+		t.Errorf("source_ids preview node_count = %+v, want 3", pv)
+	}
+
+	// source_id 单值兼容
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_id":%q}`, a.ID), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("source_id preview: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	pv = struct {
+		NodeCount int `json:"node_count"`
+	}{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pv); err != nil || pv.NodeCount != 2 {
+		t.Errorf("source_id preview node_count = %+v, want 2", pv)
+	}
+
+	// source_id 与 source_ids 并存 → 400
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_id":%q,"source_ids":[%q]}`, a.ID, b.ID), nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "source_id 与 source_ids 不能同时指定") {
+		t.Errorf("both specified: status = %d body=%s, want 400 并存拦截", rec.Code, rec.Body.String())
+	}
+
+	// 全空 / 空数组 → 400
+	for _, body := range []string{`{}`, `{"source_ids":[]}`, `{"source_id":""}`} {
+		rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", body, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("empty source %s: status = %d, want 400", body, rec.Code)
+		}
+	}
+
+	// 空数组视为未提供 → 可与 url 正常使用
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_ids":[],"url":%q}`, srcA.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty array + url: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	pv = struct {
+		NodeCount int `json:"node_count"`
+	}{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pv); err != nil || pv.NodeCount != 2 {
+		t.Errorf("empty array + url node_count = %+v, want 2", pv)
+	}
+
+	// source_ids 任一非法 → 400（消息含 badID）
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_ids":[%q,"deadbeef0000"]}`, a.ID), nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "deadbeef0000") {
+		t.Errorf("source_ids with missing: status = %d body=%s, want 400 含 deadbeef0000", rec.Code, rec.Body.String())
+	}
+}
+
+// TestConvertSourceIDsPlusURL（R4 验收 A4 混合）：source_ids + url → 混合聚合
+// （已存源在前、url 源在后），run 与 preview 均支持。
+func TestConvertSourceIDsPlusURL(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	srcA := fakeSource(t, http.StatusOK, subBody()) // 香港/日本
+	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	srcU := fakeSource(t, http.StatusOK, fmt.Sprintf("ss://%s@example.com:8388#🇩🇪 德国-01\n", ui))
+	a, err := st.CreateSource("机场A", srcA.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource A: %v", err)
+	}
+
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"source_ids":[%q],"url":%q}`, a.ID, srcU.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run mixed: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("run body not json: %v", err)
+	}
+	names := proxyNamesOrdered(t, []byte(resp.YAML))
+	want := []string{"🇭🇰 香港-01", "🇯🇵 日本-01", "🇩🇪 德国-01"}
+	if len(names) != len(want) {
+		t.Fatalf("run mixed proxies = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Errorf("run mixed 顺序 = %v, want %v（已存源在前、url 源在后）", names, want)
+			break
+		}
+	}
+
+	// preview 同支持混合
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_ids":[%q],"url":%q}`, a.ID, srcU.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview mixed: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var pv struct {
+		NodeCount int `json:"node_count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pv); err != nil || pv.NodeCount != 3 {
+		t.Errorf("preview mixed node_count = %+v, want 3", pv)
+	}
+}
+
+// TestLogRetryMultiSource（R4 验收 A5）：日志 SourceID/SourceName 逗号多值；
+// 多源日志与混合（source_ids+url）日志 retry 成功；任一源已删 → 409
+// 「订阅源已删除」；已禁用 → 409「订阅源已禁用」。
+func TestLogRetryMultiSource(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	srcA := fakeSource(t, http.StatusOK, subBody()) // 2 节点
+	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	srcB := fakeSource(t, http.StatusOK, fmt.Sprintf("ss://%s@example.com:8388#🇺🇸 美国-01\n", ui)) // 1 节点
+	srcU := fakeSource(t, http.StatusOK, fmt.Sprintf("ss://%s@example.com:8388#🇩🇪 德国-01\n", ui))
+	a, err := st.CreateSource("机场A", srcA.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource A: %v", err)
+	}
+	b, err := st.CreateSource("机场B", srcB.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource B: %v", err)
+	}
+	multiIDs := a.ID + "," + b.ID
+
+	// 多源 preview → 日志 SourceID/SourceName 逗号多值 → retry 成功（3 节点）
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_ids":[%q,%q]}`, a.ID, b.ID), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("multi preview: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	logs := st.ListLogs(10)
+	if len(logs) == 0 {
+		t.Fatal("no logs after preview")
+	}
+	if logs[0].SourceID != multiIDs {
+		t.Errorf("log SourceID = %q, want %q（逗号多值）", logs[0].SourceID, multiIDs)
+	}
+	if logs[0].SourceName != "机场A,机场B" {
+		t.Errorf("log SourceName = %q, want 机场A,机场B", logs[0].SourceName)
+	}
+	retry := doJSON(h, http.MethodPost, "/api/v1/logs/"+logs[0].ID+"/retry", "", nil)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("multi retry: status = %d, want 200; body=%s", retry.Code, retry.Body.String())
+	}
+	var resp struct {
+		NodeCount int `json:"node_count"`
+	}
+	if err := json.Unmarshal(retry.Body.Bytes(), &resp); err != nil || resp.NodeCount != 3 {
+		t.Errorf("multi retry node_count = %+v, want 3", resp)
+	}
+	// 新日志保留逗号多值
+	logs = st.ListLogs(10)
+	if logs[0].SourceID != multiIDs {
+		t.Errorf("retry log SourceID = %q, want %q", logs[0].SourceID, multiIDs)
+	}
+
+	// 混合日志（source_ids + url）→ retry 成功（3 节点），URLFull 保留 url 部分
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_ids":[%q],"url":%q}`, a.ID, srcU.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mixed preview: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	logs = st.ListLogs(10)
+	if logs[0].SourceID != a.ID || logs[0].URLFull != srcU.URL {
+		t.Errorf("mixed log = SourceID %q URLFull %q, want %q / %q", logs[0].SourceID, logs[0].URLFull, a.ID, srcU.URL)
+	}
+	retry = doJSON(h, http.MethodPost, "/api/v1/logs/"+logs[0].ID+"/retry", "", nil)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("mixed retry: status = %d, want 200; body=%s", retry.Code, retry.Body.String())
+	}
+	resp = struct {
+		NodeCount int `json:"node_count"`
+	}{}
+	if err := json.Unmarshal(retry.Body.Bytes(), &resp); err != nil || resp.NodeCount != 3 {
+		t.Errorf("mixed retry node_count = %+v, want 3", resp)
+	}
+
+	// 任一源已删 → 409 订阅源已删除
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_ids":[%q,%q]}`, a.ID, b.ID), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview for delete-case: status = %d", rec.Code)
+	}
+	delLogID := st.ListLogs(10)[0].ID
+	if err := st.DeleteSource(b.ID); err != nil {
+		t.Fatalf("DeleteSource: %v", err)
+	}
+	retry = doJSON(h, http.MethodPost, "/api/v1/logs/"+delLogID+"/retry", "", nil)
+	if retry.Code != http.StatusConflict || !strings.Contains(retry.Body.String(), "订阅源已删除") {
+		t.Errorf("retry deleted source: status = %d body=%s, want 409 订阅源已删除", retry.Code, retry.Body.String())
+	}
+
+	// 任一源已禁用 → 409 订阅源已禁用（b 在上一步已删，重新创建）
+	b, err = st.CreateSource("机场B", srcB.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource B (recreate): %v", err)
+	}
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"source_ids":[%q,%q]}`, a.ID, b.ID), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview for disable-case: status = %d", rec.Code)
+	}
+	disLogID := st.ListLogs(10)[0].ID
+	if _, err := st.UpdateSource(b.ID, store.SourcePatch{Enabled: boolPtr(false)}); err != nil {
+		t.Fatalf("disable source: %v", err)
+	}
+	retry = doJSON(h, http.MethodPost, "/api/v1/logs/"+disLogID+"/retry", "", nil)
+	if retry.Code != http.StatusConflict || !strings.Contains(retry.Body.String(), "订阅源已禁用") {
+		t.Errorf("retry disabled source: status = %d body=%s, want 409 订阅源已禁用", retry.Code, retry.Body.String())
+	}
+}
+
+// TestLogRetryDuplicateSourceID（P2）日志 SourceID 含重复 ID（如 a,a）时 retry
+// 按去重后的源数量执行——与 /sub、convert 的 resolveSourceIDs 合并语义一致，
+// 不能把同一源拉两次。
+func TestLogRetryDuplicateSourceID(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	srcA := fakeSource(t, http.StatusOK, subBody()) // 2 节点
+	a, err := st.CreateSource("机场A", srcA.URL, true)
+	if err != nil {
+		t.Fatalf("CreateSource: %v", err)
+	}
+	dupIDs := a.ID + "," + a.ID
+	if _, err := st.AppendLog(store.LogEntry{Kind: "convert", SourceID: dupIDs, Status: "ok"}); err != nil {
+		t.Fatalf("AppendLog: %v", err)
+	}
+	logID := st.ListLogs(10)[0].ID
+
+	retry := doJSON(h, http.MethodPost, "/api/v1/logs/"+logID+"/retry", "", nil)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("dedup retry: status = %d, want 200; body=%s", retry.Code, retry.Body.String())
+	}
+	var resp struct {
+		NodeCount int `json:"node_count"`
+	}
+	if err := json.Unmarshal(retry.Body.Bytes(), &resp); err != nil || resp.NodeCount != 2 {
+		t.Errorf("dedup retry node_count = %+v, want 2（重复 ID 只拉一次）", resp)
+	}
+	// 重复 ID 的日志本身不因去重而改写（原样保留，与新日志字段无关）
+	latest := st.ListLogs(10)[0]
+	if latest.SourceID != dupIDs {
+		t.Errorf("retry log SourceID = %q, want %q（原样保留）", latest.SourceID, dupIDs)
+	}
+}

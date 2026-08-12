@@ -278,8 +278,9 @@ api.NewServer（同一 25500 端口）
 | GET/POST/PUT/DELETE | /api/v1/templates[/{id}] | 规则模板 CRUD（behavior: domain/ipcidr/classical，format: yaml/text） |
 | GET | /api/v1/version | 版本信息（同公开 /version，但需鉴权） |
 
-- convert 请求体：`source_id` 与 `url`（临时，可 `|` 多源）二选一，`source_id`
-  优先；`include/exclude/rename` 正则、`udp/tls13/scv` 布尔、`template_id`
+- convert 请求体：`source_id`/`source_ids`（逗号分隔多值，任一 ID 不存在/禁用
+  → 400，两者并存 → 400）与 `url`（临时，可 `|` 多源）可混合聚合（已存源在前、
+  url 源在后）；`include/exclude/rename` 正则、`udp/tls13/scv` 布尔、`template_id`
   可选（逗号分隔多值，任一模板不存在/禁用 → 400）。规则模板注入 = 把模板 URL
   写进输出 YAML 的 `rule-providers` 并为每个模板生成专属策略组，规则集由
   OpenClash 侧拉取，本服务不拉取不校验规则内容。

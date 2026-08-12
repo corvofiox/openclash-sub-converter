@@ -57,11 +57,18 @@
   <section id="sec-convert" class="sec">
     <div class="card">
       <h2>订阅转换</h2>
-      <label>数据源
-        <select id="convSource"><option value="">（加载中…）</option></select>
+      <label>数据源（可多选，聚合订阅）
+        <div class="pick-toolbar">
+          <span id="convSrcSummary" class="pick-summary">（加载中…）</span>
+          <span class="pick-actions">
+            <button type="button" id="btnSrcAll" class="mini-btn">全选</button>
+            <button type="button" id="btnSrcClear" class="mini-btn">清空</button>
+          </span>
+        </div>
+        <div id="convSrcGrid" class="pick-grid"><span class="hint">（加载中…）</span></div>
       </label>
       <details id="tempUrlWrap">
-        <summary>或使用临时 URL（展开后禁用上方下拉）</summary>
+        <summary>或附加临时 URL（可与上方已选数据源混合聚合，多源用 | 分隔）</summary>
         <input type="text" id="convUrl" placeholder="https://example.com/sub?token=...（多源用 | 分隔）">
       </details>
       <div class="grid2">
@@ -69,7 +76,14 @@
         <label>exclude 正则 <input type="text" id="convExclude" placeholder="正则，命中剔除；多个用 | 分隔，如 剩余|距离|套餐"></label>
         <label>rename 正则 <input type="text" id="convRename" placeholder="格式：正则/替换，多条用 , 分隔，如 日本/JP,香港/HK"></label>
         <label>规则模板（可多选，生成各自专属策略组）
-          <div id="convTplBox" class="tpl-checks"><span class="hint">（加载中…）</span></div>
+          <div class="pick-toolbar">
+            <span id="convTplSummary" class="pick-summary">（加载中…）</span>
+            <span class="pick-actions">
+              <button type="button" id="btnTplAll" class="mini-btn">全选</button>
+              <button type="button" id="btnTplClear" class="mini-btn">清空</button>
+            </span>
+          </div>
+          <div id="convTplGrid" class="pick-grid"><span class="hint">（加载中…）</span></div>
         </label>
       </div>
       <div class="checks">

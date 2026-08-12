@@ -115,7 +115,7 @@ func TestSubInvalidURLReturns400(t *testing.T) {
 }
 
 // TestSubSrcParam 断言 src=<订阅源ID> 参数：正常转换 / 不存在 / 禁用 /
-// 与 url 同时存在时 src 优先。
+// 与 url 同时存在时混合聚合（src 源在前、url 源在后）。
 func TestSubSrcParam(t *testing.T) {
 	h, st := newTestServerWithStore(t)
 	src := fakeSource(t, http.StatusOK, subBody())
@@ -149,7 +149,7 @@ func TestSubSrcParam(t *testing.T) {
 		t.Errorf("src disabled: status = %d, want 400", rec.Code)
 	}
 
-	// src 与 url 同时存在 → src 优先（输出 src 的节点，忽略 url）
+	// R4：src 与 url 同时存在 → 混合聚合（src 源在前、url 源在后），不再互斥
 	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
 	other := fakeSource(t, http.StatusOK, fmt.Sprintf("ss://%s@other.example.com:8388#OTHER-01\n", ui))
 	vals := url.Values{}
@@ -158,14 +158,14 @@ func TestSubSrcParam(t *testing.T) {
 	vals.Set("url", other.URL)
 	rec = do(h, "/sub?"+vals.Encode())
 	if rec.Code != http.StatusOK {
-		t.Fatalf("src priority: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("src+url mixed: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "香港-01") {
-		t.Errorf("src priority: missing src node 香港-01")
+		t.Errorf("src+url mixed: missing src node 香港-01")
 	}
-	if strings.Contains(body, "OTHER-01") {
-		t.Errorf("src priority: url node OTHER-01 should be ignored when src present")
+	if !strings.Contains(body, "OTHER-01") {
+		t.Errorf("src+url mixed: missing url node OTHER-01")
 	}
 }
 

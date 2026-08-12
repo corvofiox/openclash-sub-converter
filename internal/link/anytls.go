@@ -33,6 +33,7 @@ func parseAnyTLS(link string) (map[string]any, error) {
 
 	entry := baseEntry(nodeName(u.Fragment, host, port), "anytls", host, port)
 	entry["password"] = password
+	entry["udp"] = true // 与 vless/ss 一致：显式声明 udp 支持（mihomo 默认 true，显式消除版本差异）
 
 	if v := q.Get("sni"); v != "" {
 		entry["sni"] = v

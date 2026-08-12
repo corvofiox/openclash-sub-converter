@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -179,6 +180,13 @@ func TestSubSuccess(t *testing.T) {
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
+	// R2 无失败源：不输出告警注释、不设置告警头（字节级兼容基线）
+	if strings.Contains(rec.Body.String(), "# [OSC-WARNING]") {
+		t.Errorf("no-failure response should not contain OSC-WARNING comment:\n%s", rec.Body.String())
+	}
+	if h := rec.Header().Get("X-Osc-Warning"); h != "" {
+		t.Errorf("no-failure response should not set X-Osc-Warning, got %q", h)
+	}
 
 	var cfg map[string]any
 	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
@@ -261,6 +269,21 @@ func TestSubPartialFailure(t *testing.T) {
 	proxies, ok := cfg["proxies"].([]any)
 	if !ok || len(proxies) != 2 {
 		t.Fatalf("proxies = %T len %d, want 2 (from good source)", cfg["proxies"], len(proxies))
+	}
+	// R2 三通道：YAML 顶部注释 + X-Osc-Warning 响应头（只含失败 host，不含完整 URL）
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, "# [OSC-WARNING]") {
+		t.Errorf("response should start with OSC-WARNING comment:\n%s", body)
+	}
+	badHost := strings.TrimPrefix(bad.URL, "http://")
+	if !strings.Contains(body, "# [OSC-WARNING] "+badHost) {
+		t.Errorf("comment should mention failed host %q:\n%s", badHost, body)
+	}
+	if strings.Contains(body, bad.URL) {
+		t.Errorf("comment leaks full failed url %q:\n%s", bad.URL, body)
+	}
+	if h := rec.Header().Get("X-Osc-Warning"); h != badHost {
+		t.Errorf("X-Osc-Warning = %q, want %q", h, badHost)
 	}
 }
 
@@ -520,6 +543,19 @@ func findGroupByName(t *testing.T, groups []any, name string) map[string]any {
 	return nil
 }
 
+// findGroupByNameMaps 同 findGroupByName，但输入为 JSON 反序列化得到的
+// []map[string]any（preview/retry 响应的 groups 字段）。
+func findGroupByNameMaps(t *testing.T, groups []map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, g := range groups {
+		if g["name"] == name {
+			return g
+		}
+	}
+	t.Fatalf("group %q not found in %v", name, groups)
+	return nil
+}
+
 // TestSubStripEmojiDupNames 断言重名场景（验收 9）：输入 🇭🇰 香港01 与 香港01，
 // strip_emoji=true 后输出名唯一（香港01 / 香港01 (2)）、地区组 proxies 引用与
 // proxies 段一致，且产物通过 mihomo output.Validate（重名会被 mihomo 拒绝）。
@@ -591,5 +627,448 @@ func TestSubRenameMultiRule(t *testing.T) {
 	rec = do(h, subQuery(src.URL, map[string]string{"rename": "日本-01/JP01,香港-01"}))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("invalid multi-rule rename: status = %d, want 400", rec.Code)
+	}
+}
+
+// TestConvertWarnings 断言 R2 convert 双路径（preview 与 run）JSON 带 warnings
+// 数组：部分失败时含失败 host（脱敏），全成功时为空数组 []；且响应头带 X-Osc-Warning。
+func TestConvertWarnings(t *testing.T) {
+	h := newTestServer(t)
+	bad := fakeSource(t, http.StatusInternalServerError, "boom")
+	good := fakeSource(t, http.StatusOK, subBody())
+	badHost := strings.TrimPrefix(bad.URL, "http://")
+
+	// preview：1 好 + 1 坏 → warnings 1 项含坏 host；头含坏 host
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/preview",
+		fmt.Sprintf(`{"url":%q}`, good.URL+"|"+bad.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var pv struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pv); err != nil {
+		t.Fatalf("preview body not json: %v", err)
+	}
+	if len(pv.Warnings) != 1 || !strings.Contains(pv.Warnings[0], badHost) {
+		t.Errorf("preview warnings = %v, want 1 项含 %q", pv.Warnings, badHost)
+	}
+	if strings.Contains(pv.Warnings[0], bad.URL) {
+		t.Errorf("preview warnings leaks full url: %q", pv.Warnings[0])
+	}
+	if h := rec.Header().Get("X-Osc-Warning"); h != badHost {
+		t.Errorf("preview X-Osc-Warning = %q, want %q", h, badHost)
+	}
+
+	// run：同样带 warnings 与头，且 yaml 含注释
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/run",
+		fmt.Sprintf(`{"url":%q}`, good.URL+"|"+bad.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var run struct {
+		YAML     string   `json:"yaml"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &run); err != nil {
+		t.Fatalf("run body not json: %v", err)
+	}
+	if len(run.Warnings) != 1 || !strings.Contains(run.Warnings[0], badHost) {
+		t.Errorf("run warnings = %v, want 1 项含 %q", run.Warnings, badHost)
+	}
+	if !strings.HasPrefix(run.YAML, "# [OSC-WARNING]") || !strings.Contains(run.YAML, badHost) {
+		t.Errorf("run yaml 缺 OSC-WARNING 注释:\n%s", run.YAML)
+	}
+	if h := rec.Header().Get("X-Osc-Warning"); h != badHost {
+		t.Errorf("run X-Osc-Warning = %q, want %q", h, badHost)
+	}
+
+	// 全成功 → warnings 为空数组 []（非 null）、无头
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"url":%q}`, good.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview ok status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"warnings":[]`) {
+		t.Errorf("preview ok warnings should be empty array, body=%s", rec.Body.String())
+	}
+	if h := rec.Header().Get("X-Osc-Warning"); h != "" {
+		t.Errorf("preview ok should not set X-Osc-Warning, got %q", h)
+	}
+}
+
+// ---------- R3/R4：模板 → 专属策略组 + /sub 多 template_id ----------
+
+// findRuleSetIndex 返回 rules 中指定 RULE-SET 行的下标；不存在返回 -1。
+func findRuleSetIndex(rules []any, line string) int {
+	for i, r := range rules {
+		if r == line {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestSubTemplateSingle（R3 验收 A3）：/sub?template_id=<id> 单模板——
+// rule-providers 含该模板、专属策略组（select，全节点名+直连+拒绝）、
+// RULE-SET,<模板名>,<模板名> 在 MATCH 前。
+func TestSubTemplateSingle(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	tpl := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	rec := do(h, subQuery(src.URL, map[string]string{"template_id": tpl["id"].(string)}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	rps, ok := cfg["rule-providers"].(map[string]any)
+	if !ok || len(rps) != 1 {
+		t.Fatalf("rule-providers = %T %v, want 1 entry", cfg["rule-providers"], cfg["rule-providers"])
+	}
+	if _, ok := rps["Netflix"]; !ok {
+		t.Errorf("rule-providers 缺 Netflix，实际 %v", rps)
+	}
+	groups, _ := cfg["proxy-groups"].([]any)
+	ng := findGroupByName(t, groups, "Netflix")
+	if ng["type"] != "select" {
+		t.Errorf("Netflix group type = %v, want select", ng["type"])
+	}
+	wantRefs := []any{"🇭🇰 香港-01", "🇯🇵 日本-01", "直连", "拒绝"}
+	if !reflect.DeepEqual(ng["proxies"], wantRefs) {
+		t.Errorf("Netflix proxies = %v, want %v", ng["proxies"], wantRefs)
+	}
+	rules, _ := cfg["rules"].([]any)
+	rsIdx := findRuleSetIndex(rules, "RULE-SET,Netflix,Netflix")
+	matchIdx := findRuleSetIndex(rules, "MATCH,手动选择")
+	if rsIdx < 0 || matchIdx < 0 || rsIdx > matchIdx {
+		t.Errorf("rules = %v, want RULE-SET,Netflix,Netflix 在 MATCH 前", rules)
+	}
+}
+
+// TestSubTemplateMulti（R3 验收 A4 + R4）：逗号分隔双模板 → 两个专属组、
+// 两条 RULE-SET 各自指向、rule-providers 含两者。
+func TestSubTemplateMulti(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	t1 := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	t2 := createTemplateViaAPI(t, h, "YouTube", "https://x.example.com/yt.txt", "classical", "text")
+	ids := t1["id"].(string) + "," + t2["id"].(string)
+	rec := do(h, subQuery(src.URL, map[string]string{"template_id": ids}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	rps, ok := cfg["rule-providers"].(map[string]any)
+	if !ok || len(rps) != 2 {
+		t.Fatalf("rule-providers = %T %v, want 2 entries", cfg["rule-providers"], cfg["rule-providers"])
+	}
+	for _, name := range []string{"Netflix", "YouTube"} {
+		if _, ok := rps[name]; !ok {
+			t.Errorf("rule-providers 缺 %s", name)
+		}
+	}
+	groups, _ := cfg["proxy-groups"].([]any)
+	for _, name := range []string{"Netflix", "YouTube"} {
+		g := findGroupByName(t, groups, name)
+		if g["type"] != "select" {
+			t.Errorf("%s group type = %v, want select", name, g["type"])
+		}
+	}
+	rules, _ := cfg["rules"].([]any)
+	matchIdx := findRuleSetIndex(rules, "MATCH,手动选择")
+	for _, line := range []string{"RULE-SET,Netflix,Netflix", "RULE-SET,YouTube,YouTube"} {
+		idx := findRuleSetIndex(rules, line)
+		if idx < 0 || idx > matchIdx {
+			t.Errorf("rules 缺 %q 或在 MATCH 后：%v", line, rules)
+		}
+	}
+}
+
+// TestSubTemplateInvalid（R3 验收 A6）：模板不存在/disabled → 400
+// 「模板不存在或已禁用」；多值中任一非法 → 400；无 store 实例同样 400。
+func TestSubTemplateInvalid(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+
+	// 不存在
+	rec := do(h, subQuery(src.URL, map[string]string{"template_id": "deadbeef0000"}))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "模板不存在或已禁用") {
+		t.Errorf("missing template: status = %d body=%s, want 400 模板不存在或已禁用", rec.Code, rec.Body.String())
+	}
+
+	// disabled
+	tpl := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	if rec := doJSON(h, http.MethodPut, "/api/v1/templates/"+tpl["id"].(string), `{"enabled":false}`, nil); rec.Code != http.StatusOK {
+		t.Fatalf("disable template: status = %d", rec.Code)
+	}
+	rec = do(h, subQuery(src.URL, map[string]string{"template_id": tpl["id"].(string)}))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "模板不存在或已禁用") {
+		t.Errorf("disabled template: status = %d body=%s, want 400 模板不存在或已禁用", rec.Code, rec.Body.String())
+	}
+
+	// 多值中任一非法 → 400（第一个合法、第二个不存在）
+	tpl2 := createTemplateViaAPI(t, h, "YouTube", "https://x.example.com/yt.txt", "classical", "text")
+	rec = do(h, subQuery(src.URL, map[string]string{"template_id": tpl2["id"].(string) + ",deadbeef0000"}))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "模板不存在或已禁用") {
+		t.Errorf("multi with invalid: status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+
+	// 无 store 实例（/sub 公开端点）+ template_id → 400（不 panic）
+	h2 := newTestServerNoStore(t)
+	rec = do(h2, subQuery(src.URL, map[string]string{"template_id": "x"}))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("no-store template_id: status = %d, want 400", rec.Code)
+	}
+}
+
+// TestSubTemplateNameConflict（R3 验收 A5，P1-2/P1-1 修复后重写）：模板名与地区组
+// 重名 → 「(模板)」后缀，RULE-SET 目标指向最终唯一组名；节点名 X 与 X(模板) 并存
+// 时模板名 X 得「X(模板)2」递增。同名模板（不同 id）场景已被 P1-2 改为 400
+// （见 TestSubTemplateDuplicateNameRejected），递增路径改由节点名占用触发。
+func TestSubTemplateNameConflict(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody()) // 生成「香港节点」/「日本节点」地区组
+	tpl := createTemplateViaAPI(t, h, "香港节点", "https://x.example.com/hk.yaml", "domain", "yaml")
+	rec := do(h, subQuery(src.URL, map[string]string{"template_id": tpl["id"].(string)}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	groups, _ := cfg["proxy-groups"].([]any)
+	findGroupByName(t, groups, "香港节点(模板)") // 冲突 → 后缀生效
+	rules, _ := cfg["rules"].([]any)
+	if idx := findRuleSetIndex(rules, "RULE-SET,香港节点,香港节点(模板)"); idx < 0 {
+		t.Errorf("rules 缺 RULE-SET,香港节点,香港节点(模板)：%v", rules)
+	}
+
+	// 第二个场景（P1-1 + 「(模板)2」递增）：节点名 X 与 X(模板) 并存、模板名 X
+	// 撞两者 → 专属组名「X(模板)2」（同名模板已被 P1-2 拦截为 400，递增路径只能
+	// 靠节点/组名占用 X(模板) 触达）。
+	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	body := fmt.Sprintf("ss://%s@example.com:8388#香港-01"+"\n"+"ss://%s@example.com:8388#香港-01(模板)"+"\n", ui, ui)
+	src2 := fakeSource(t, http.StatusOK, body)
+	tpl2 := createTemplateViaAPI(t, h, "香港-01", "https://x.example.com/hk2.yaml", "domain", "yaml")
+	rec = do(h, subQuery(src2.URL, map[string]string{"template_id": tpl2["id"].(string)}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	cfg = map[string]any{}
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	groups, _ = cfg["proxy-groups"].([]any)
+	findGroupByName(t, groups, "香港-01(模板)2")
+	rules, _ = cfg["rules"].([]any)
+	if idx := findRuleSetIndex(rules, "RULE-SET,香港-01,香港-01(模板)2"); idx < 0 {
+		t.Errorf("rules 缺 RULE-SET,香港-01,香港-01(模板)2：%v", rules)
+	}
+}
+
+// TestSubTemplateDuplicateNameRejected（P1-2）：两个不同 id 但同名模板 → 400
+// 「模板名称冲突」（rule-providers map 键覆盖会静默丢 URL）；/sub 与 convert
+// 入口同样拦截。
+func TestSubTemplateDuplicateNameRejected(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	t1 := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	t2 := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf2.yaml", "domain", "yaml")
+	ids := t1["id"].(string) + "," + t2["id"].(string)
+
+	rec := do(h, subQuery(src.URL, map[string]string{"template_id": ids}))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "模板名称冲突") {
+		t.Errorf("/sub duplicate name: status = %d body=%s, want 400 模板名称冲突", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q,"template_id":%q}`, src.URL, ids), nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "模板名称冲突") {
+		t.Errorf("convert duplicate name: status = %d body=%s, want 400 模板名称冲突", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSubTemplateNameConflictsNode（P1-1）：模板名与节点最终名重名（节点名恰为
+// Netflix）或等于内置出站名 DIRECT → 专属组名加「(模板)」后缀、RULE-SET 指向
+// 后缀名、节点引用不受影响（否则 mihomo duplicate name 拒绝加载，而语法层
+// output.Validate 放行）。
+func TestSubTemplateNameConflictsNode(t *testing.T) {
+	h := newTestServer(t)
+	ui := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	body := fmt.Sprintf("ss://%s@example.com:8388#Netflix"+"\n"+"ss://%s@example.com:8388#🇯🇵 日本-01"+"\n", ui, ui)
+	src := fakeSource(t, http.StatusOK, body)
+	t1 := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	t2 := createTemplateViaAPI(t, h, "DIRECT", "https://x.example.com/direct.yaml", "domain", "yaml")
+	ids := t1["id"].(string) + "," + t2["id"].(string)
+	rec := do(h, subQuery(src.URL, map[string]string{"template_id": ids}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	groups, _ := cfg["proxy-groups"].([]any)
+	// 撞节点名 → 后缀；专属组 proxies 仍引用节点 Netflix（引用不受影响）
+	ng := findGroupByName(t, groups, "Netflix(模板)")
+	wantRefs := []any{"Netflix", "🇯🇵 日本-01", "直连", "拒绝"}
+	if !reflect.DeepEqual(ng["proxies"], wantRefs) {
+		t.Errorf("Netflix(模板) proxies = %v, want %v", ng["proxies"], wantRefs)
+	}
+	// 撞内置出站名 DIRECT → 后缀
+	findGroupByName(t, groups, "DIRECT(模板)")
+	rules, _ := cfg["rules"].([]any)
+	matchIdx := findRuleSetIndex(rules, "MATCH,手动选择")
+	for _, line := range []string{"RULE-SET,Netflix,Netflix(模板)", "RULE-SET,DIRECT,DIRECT(模板)"} {
+		idx := findRuleSetIndex(rules, line)
+		if idx < 0 || idx > matchIdx {
+			t.Errorf("rules 缺 %q 或在 MATCH 后：%v", line, rules)
+		}
+	}
+}
+
+// TestSubTemplateDedupID（P2-2）：template_id 重复 id（a,a）→ 去重只保留一个，
+// 产物仅一个专属组 + 一条 RULE-SET（避免同一模板生成两份）。
+func TestSubTemplateDedupID(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	tpl := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	id := tpl["id"].(string)
+	rec := do(h, subQuery(src.URL, map[string]string{"template_id": id + "," + id}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	rps, ok := cfg["rule-providers"].(map[string]any)
+	if !ok || len(rps) != 1 {
+		t.Errorf("rule-providers = %T %v, want 1 entry（重复 id 去重）", cfg["rule-providers"], cfg["rule-providers"])
+	}
+	groups, _ := cfg["proxy-groups"].([]any)
+	if n := countGroupNames(groups, "Netflix"); n != 1 {
+		t.Errorf("Netflix 专属组数量 = %d, want 1", n)
+	}
+	rules, _ := cfg["rules"].([]any)
+	if n := countRuleLines(rules, "RULE-SET,Netflix,Netflix"); n != 1 {
+		t.Errorf("RULE-SET,Netflix,Netflix 数量 = %d, want 1", n)
+	}
+}
+
+// countGroupNames 统计 groups 中名为 name 的组数量。
+func countGroupNames(groups []any, name string) int {
+	n := 0
+	for _, g := range groups {
+		if m, ok := g.(map[string]any); ok && m["name"] == name {
+			n++
+		}
+	}
+	return n
+}
+
+// countRuleLines 统计 rules 中与 line 完全相等的行数。
+func countRuleLines(rules []any, line string) int {
+	n := 0
+	for _, r := range rules {
+		if r == line {
+			n++
+		}
+	}
+	return n
+}
+
+// TestConvertTemplateMulti（R4）：convert/run 与 preview 的 template_id
+// 逗号分隔多值 → 两个专属组 + rule-providers 两条；任一非法 → 400。
+func TestConvertTemplateMulti(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	t1 := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	t2 := createTemplateViaAPI(t, h, "YouTube", "https://x.example.com/yt.txt", "classical", "text")
+	ids := t1["id"].(string) + "," + t2["id"].(string)
+
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q,"template_id":%q}`, src.URL, ids), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("run body not json: %v", err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal([]byte(resp.YAML), &cfg); err != nil {
+		t.Fatalf("yaml field not valid: %v", err)
+	}
+	rps, _ := cfg["rule-providers"].(map[string]any)
+	if len(rps) != 2 {
+		t.Errorf("rule-providers len = %d, want 2", len(rps))
+	}
+	groups, _ := cfg["proxy-groups"].([]any)
+	findGroupByName(t, groups, "Netflix")
+	findGroupByName(t, groups, "YouTube")
+
+	// preview 同支持多值
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"url":%q,"template_id":%q}`, src.URL, ids), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var pv struct {
+		Groups []map[string]any `json:"groups"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pv); err != nil {
+		t.Fatalf("preview body not json: %v", err)
+	}
+	findGroupByNameMaps(t, pv.Groups, "Netflix")
+	findGroupByNameMaps(t, pv.Groups, "YouTube")
+
+	// 多值任一非法 → 400
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q,"template_id":%q}`, src.URL, t1["id"].(string)+",deadbeef0000"), nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "模板不存在或已禁用") {
+		t.Errorf("multi invalid: status = %d body=%s, want 400 模板不存在或已禁用", rec.Code, rec.Body.String())
+	}
+}
+
+// TestLogRetryTemplateMulti（R3 验收 A9）：retry 保留多 template_id 并注入。
+func TestLogRetryTemplateMulti(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	t1 := createTemplateViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	t2 := createTemplateViaAPI(t, h, "YouTube", "https://x.example.com/yt.txt", "classical", "text")
+	ids := t1["id"].(string) + "," + t2["id"].(string)
+
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"url":%q,"template_id":%q}`, src.URL, ids), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	logs := st.ListLogs(10)
+	if len(logs) != 1 {
+		t.Fatalf("logs len = %d, want 1", len(logs))
+	}
+	if got, _ := logs[0].Params["template_id"].(string); got != ids {
+		t.Errorf("log params template_id = %q, want %q", got, ids)
+	}
+	rec = doJSON(h, http.MethodPost, "/api/v1/logs/"+logs[0].ID+"/retry", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// 重试产物含两个专属组
+	var resp struct {
+		Groups []map[string]any `json:"groups"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("retry body not json: %v", err)
+	}
+	findGroupByNameMaps(t, resp.Groups, "Netflix")
+	findGroupByNameMaps(t, resp.Groups, "YouTube")
+	// 新日志 Params 保留多值 template_id（entry.Params 原样透传）
+	logs = st.ListLogs(10)
+	if got, _ := logs[0].Params["template_id"].(string); got != ids {
+		t.Errorf("retry log params template_id = %q, want %q", got, ids)
 	}
 }

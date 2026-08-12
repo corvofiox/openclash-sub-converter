@@ -110,11 +110,13 @@ type pipelineError struct {
 
 // convertResult 是一次转换管线的产物。
 type convertResult struct {
-	nodes     []map[string]any // transform 后的节点（name/type 等）
-	groups    []map[string]any // groups.Build 产物
-	cfg       map[string]any   // template.Build 产物（含规则模板注入）
-	data      []byte           // 渲染后的 YAML（render=false 时为空）
-	nodeCount int
+	nodes       []map[string]any // transform 后的节点（name/type 等）
+	groups      []map[string]any // groups.Build 产物
+	cfg         map[string]any   // template.Build 产物（含规则模板注入）
+	data        []byte           // 渲染后的 YAML（render=false 时为空，失败源告警注释已 prepend）
+	nodeCount   int
+	warnings    []string // 失败源告警（"host: error" 预格式化，sanitizeErr 已脱敏）；无失败时为空数组
+	failedHosts []string // 失败源 host 列表（响应头 X-Osc-Warning 用，不含 error）
 }
 
 // runPipeline 执行转换管线：拉取→解析→节点级校验→transform→groups→
@@ -124,22 +126,27 @@ type convertResult struct {
 // 语义分层：结构非法的源 URL 由调用方在进入本函数前校验（400）；结构合法但
 // 拉取/解析失败的源记 warn 并跳过，全部失败 → 502；transform 参数错误
 // （transform.ErrInvalidRegex）→ 400；其余内部错误 → 500。
-func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Filter, opts template.Options, tpl *store.RuleTemplate, render bool) (*convertResult, *pipelineError) {
+func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Filter, opts template.Options, tpls []store.RuleTemplate, render bool) (*convertResult, *pipelineError) {
 	ctx := r.Context()
 	var allNodes []map[string]any
-	var failedHosts []string
+	failedHosts := make([]string, 0)
+	warnings := make([]string, 0) // R2：失败源告警（"host: error"），空数组保证 JSON 输出 []
 	for _, src := range srcs {
 		host := hostOf(src)
 		body, err := s.f.Fetch(ctx, src)
 		if err != nil {
-			s.logger.Warn("fetch subscription source failed", "host", host, "error", sanitizeErr(err, src, host))
+			wmsg := sanitizeErr(err, src, host)
+			s.logger.Warn("fetch subscription source failed", "host", host, "error", wmsg)
 			failedHosts = append(failedHosts, host)
+			warnings = append(warnings, host+": "+wmsg)
 			continue
 		}
 		nodes, err := link.ParseSubscription(body, host)
 		if err != nil {
-			s.logger.Warn("parse subscription source failed", "host", host, "error", sanitizeErr(err, src, host))
+			wmsg := sanitizeErr(err, src, host)
+			s.logger.Warn("parse subscription source failed", "host", host, "error", wmsg)
 			failedHosts = append(failedHosts, host)
+			warnings = append(warnings, host+": "+wmsg)
 			continue
 		}
 		allNodes = append(allNodes, nodes...)
@@ -185,19 +192,70 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 	// R2：剥离节点名 emoji（识别已在 groups.Build 基于原始名完成）；
 	// strip=false 时 no-op。剥离后统一 uniqueName 去重并改写组 proxies 引用。
 	transform.ApplyStripEmoji(nodes, groupsList, filter.StripEmoji)
+	// R3 模板专属策略组：必须先于 template.Build 追加到 groupsList（Build 会
+	// 把组列表固化进 cfgMap["proxy-groups"]，事后 append 不生效）。
+	// 组 = select，proxies=[全部去重节点名..., 直连组, 拒绝组]；组名与已有组
+	// （手动选择/自动选择/地区组/其他节点/直连/拒绝/已加模板组）冲突时加
+	// 「(模板)」后缀递增。RULE-SET,<模板名>,<最终组名> 行在 cfgMap 构建后由
+	// ApplyRuleProviders 一次性注入（cfg["rule-providers"] 整体覆盖，多模板
+	// 严禁逐次调用）。
+	var rps []template.RuleProvider
+	if len(tpls) > 0 {
+		// P1-2：同名模板（不同 id）会让 rule-providers map 键互相覆盖、前者 URL
+		// 静默丢失（两个专属组的 RULE-SET 都引用后者规则集）→ 400 拒绝整个请求。
+		// store 无名称唯一性约束，这里在构造 rps 前显式拦截。
+		seenNames := make(map[string]bool, len(tpls))
+		for _, t := range tpls {
+			if seenNames[t.Name] {
+				return nil, &pipelineError{code: http.StatusBadRequest, msg: fmt.Sprintf("模板名称冲突: %s(存在同名模板)", t.Name)}
+			}
+			seenNames[t.Name] = true
+		}
+		usedNames := make(map[string]bool, len(groupsList)+len(tpls))
+		for _, g := range groupsList {
+			if n, ok := g["name"].(string); ok {
+				usedNames[n] = true
+			}
+		}
+		// P1-1：专属组名还必须避开节点最终名与 mihomo 内置出站名 DIRECT/REJECT——
+		// 组名与节点重名或等于内置出站名时 mihomo 报 duplicate name 拒绝加载，而
+		// output.Validate 只做语法层校验会放行（静默交付坏配置）。nodes 在此处已是
+		// strip_emoji + uniqueName 去重后的最终名，与 proxies 段一致。
+		for _, n := range nodes {
+			if name, ok := n["name"].(string); ok {
+				usedNames[name] = true
+			}
+		}
+		usedNames["DIRECT"] = true
+		usedNames["REJECT"] = true
+		rps = make([]template.RuleProvider, 0, len(tpls))
+		for _, t := range tpls {
+			gname := uniqueTemplateGroupName(t.Name, usedNames)
+			usedNames[gname] = true
+			proxies := make([]any, 0, len(nodes)+2)
+			for _, n := range nodes {
+				proxies = append(proxies, n["name"])
+			}
+			proxies = append(proxies, groups.GroupDirect, groups.GroupReject)
+			groupsList = append(groupsList, map[string]any{
+				"name": gname, "type": "select", "proxies": proxies,
+			})
+			rps = append(rps, template.RuleProvider{
+				Name: t.Name, URL: t.URL, Behavior: t.Behavior, Format: t.Format,
+				TargetGroup: gname,
+			})
+		}
+	}
 	cfgMap, err := template.Build(nodes, groupsList, opts)
 	if err != nil {
 		return nil, &pipelineError{code: http.StatusInternalServerError, msg: fmt.Sprintf("build config failed: %v", err)}
 	}
-	// 规则模板注入：preview/run 通过 template_id 引用已启用的模板
-	if tpl != nil {
-		if err := template.ApplyRuleProviders(cfgMap, []template.RuleProvider{{
-			Name: tpl.Name, URL: tpl.URL, Behavior: tpl.Behavior, Format: tpl.Format,
-		}}, ""); err != nil {
+	if len(rps) > 0 {
+		if err := template.ApplyRuleProviders(cfgMap, rps); err != nil {
 			return nil, &pipelineError{code: http.StatusInternalServerError, msg: fmt.Sprintf("apply rule providers failed: %v", err)}
 		}
 	}
-	res := &convertResult{nodes: nodes, groups: groupsList, cfg: cfgMap, nodeCount: len(nodes)}
+	res := &convertResult{nodes: nodes, groups: groupsList, cfg: cfgMap, nodeCount: len(nodes), warnings: warnings, failedHosts: failedHosts}
 	if !render {
 		return res, nil
 	}
@@ -208,6 +266,18 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 	if err := output.Validate(data); err != nil {
 		s.logger.Error("generated config failed mihomo validation", "error", err)
 		return nil, &pipelineError{code: http.StatusInternalServerError, msg: fmt.Sprintf("generated config failed mihomo validation: %v", err)}
+	}
+	// R2：失败源告警注释 prepend 到最终 data 字节（YAML 顶部、mixed-port 之前）。
+	// 严禁改 cfgMap/yaml.Node 结构（段序保序依赖 cfgMap 结构不变）；注释不参与
+	// YAML 解析（output.Validate 已在无注释数据上通过）。换行替换防多行错误破坏注释。
+	if len(warnings) > 0 {
+		var sb strings.Builder
+		for _, w := range warnings {
+			sb.WriteString("# [OSC-WARNING] ")
+			sb.WriteString(strings.ReplaceAll(w, "\n", " "))
+			sb.WriteString("\n")
+		}
+		data = append([]byte(sb.String()), data...)
 	}
 	res.data = data
 	return res, nil
@@ -283,14 +353,20 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 		SCV:   truthy(q.Get("scv")),
 	}
 
-	res, perr := s.runPipeline(r, sources, filter, opts, nil, true)
+	// R4：template_id 逗号分隔多值；任一模板不存在或禁用 → 400
+	tpls, perr := s.resolveTemplates(q.Get("template_id"))
+	if perr != nil {
+		s.logSubError(w, r, start, perr.msg, srcID, srcName, urlFull, q)
+		return
+	}
+	res, perr := s.runPipeline(r, sources, filter, opts, tpls, true)
 	s.appendLog(store.LogEntry{
 		Kind:        "sub",
 		SourceID:    srcID,
 		SourceName:  srcName,
 		URLRedacted: redactURL(urlFullOrSources(urlFull, sources)),
 		URLFull:     urlFull,
-		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), opts.UDP, opts.TLS13, opts.SCV, truthy(q.Get("strip_emoji")), ""),
+		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), opts.UDP, opts.TLS13, opts.SCV, truthy(q.Get("strip_emoji")), q.Get("template_id")),
 		Status:      statusOf(perr),
 		Error:       errOf(perr),
 		NodeCount:   nodeCountOf(res, perr),
@@ -301,6 +377,10 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R2：存在失败源时设置告警头（只放 host，不放 error）；无失败不设（响应字节级不变）
+	if len(res.failedHosts) > 0 {
+		w.Header().Set("X-Osc-Warning", strings.Join(res.failedHosts, ", "))
+	}
 	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -365,21 +445,17 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 			return
 		}
 
-		// 规则模板：template_id 非空时注入已启用的模板
-		var tpl *store.RuleTemplate
-		if req.TemplateID != "" {
-			t, ok := s.st.GetTemplate(req.TemplateID)
-			if !ok || !t.Enabled {
-				writeJSONError(w, http.StatusBadRequest, "模板不存在或已禁用")
-				return
-			}
-			tpl = &t
+		// 规则模板：template_id 逗号分隔多值；任一模板不存在或禁用 → 400
+		tpls, perr := s.resolveTemplates(req.TemplateID)
+		if perr != nil {
+			writeJSONError(w, perr.code, perr.msg)
+			return
 		}
 
 		filter := transform.Filter{Rename: req.Rename, Include: req.Include, Exclude: req.Exclude, StripEmoji: boolVal(req.StripEmoji)}
 		opts := template.Options{UDP: boolVal(req.UDP), TLS13: boolVal(req.TLS13), SCV: boolVal(req.SCV)}
 
-		res, perr := s.runPipeline(r, sources, filter, opts, tpl, render)
+		res, perr := s.runPipeline(r, sources, filter, opts, tpls, render)
 		s.appendLog(store.LogEntry{
 			Kind:        kind,
 			SourceID:    srcID,
@@ -397,12 +473,17 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 			return
 		}
 
+		// R2：存在失败源时设置告警头（只放 host）；JSON 响应带 warnings 数组
+		if len(res.failedHosts) > 0 {
+			w.Header().Set("X-Osc-Warning", strings.Join(res.failedHosts, ", "))
+		}
 		duration := time.Since(start).Milliseconds()
 		if render {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"yaml":        string(res.data),
 				"node_count":  res.nodeCount,
 				"duration_ms": duration,
+				"warnings":    res.warnings,
 			})
 			return
 		}
@@ -417,6 +498,7 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 			"node_count":  res.nodeCount,
 			"groups":      res.groups,
 			"duration_ms": duration,
+			"warnings":    res.warnings,
 		})
 	}
 }
@@ -488,17 +570,16 @@ func (s *server) handleLogRetry(w http.ResponseWriter, r *http.Request) {
 		TLS13: boolParam(entry.Params, "tls13"),
 		SCV:   boolParam(entry.Params, "scv"),
 	}
-	var tpl *store.RuleTemplate
+	var tpls []store.RuleTemplate
 	if tplID := strParam(entry.Params, "template_id"); tplID != "" {
-		t, ok := s.st.GetTemplate(tplID)
-		if !ok || !t.Enabled {
-			writeJSONError(w, http.StatusBadRequest, "模板不存在或已禁用")
+		var perr *pipelineError
+		if tpls, perr = s.resolveTemplates(tplID); perr != nil {
+			writeJSONError(w, perr.code, perr.msg)
 			return
 		}
-		tpl = &t
 	}
 
-	res, perr := s.runPipeline(r, sources, filter, opts, tpl, false)
+	res, perr := s.runPipeline(r, sources, filter, opts, tpls, false)
 	s.appendLog(store.LogEntry{
 		Kind:        "preview",
 		SourceID:    srcID,
@@ -526,6 +607,7 @@ func (s *server) handleLogRetry(w http.ResponseWriter, r *http.Request) {
 		"node_count":  res.nodeCount,
 		"groups":      res.groups,
 		"duration_ms": time.Since(start).Milliseconds(),
+		"warnings":    res.warnings,
 	})
 }
 
@@ -823,6 +905,50 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 
 // ---------- 工具函数 ----------
 
+// uniqueTemplateGroupName 为模板专属策略组分配唯一组名：与已有组名（手动选择/
+// 自动选择/地区组/其他节点/直连/拒绝/已添加的模板组）冲突时追加「(模板)」后缀，
+// 仍冲突则递增「(模板)2」「(模板)3」……直到唯一。调用方须在 used 中登记新名。
+func uniqueTemplateGroupName(base string, used map[string]bool) string {
+	if !used[base] {
+		return base
+	}
+	cand := base + "(模板)"
+	for i := 2; used[cand]; i++ {
+		cand = base + "(模板)" + strconv.Itoa(i)
+	}
+	return cand
+}
+
+// resolveTemplates 解析逗号分隔的 template_id 列表并逐个校验（存在且启用）；
+// 任一不存在或 disabled → 400「模板不存在或已禁用」。空串 → 返回 nil（无模板）。
+// handleSub 在 st==nil（未挂载 store）时传 template_id 同样按不存在处理。
+func (s *server) resolveTemplates(raw string) ([]store.RuleTemplate, *pipelineError) {
+	if raw == "" {
+		return nil, nil
+	}
+	if s.st == nil {
+		return nil, &pipelineError{code: http.StatusBadRequest, msg: "模板不存在或已禁用"}
+	}
+	ids := strings.Split(raw, ",")
+	tpls := make([]store.RuleTemplate, 0, len(ids))
+	// P2-2：重复 template_id（如 a,a）去重只保留第一个，避免同一模板生成两份
+	// 专属组与 RULE-SET。
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		t, ok := s.st.GetTemplate(id)
+		if !ok || !t.Enabled {
+			return nil, &pipelineError{code: http.StatusBadRequest, msg: "模板不存在或已禁用"}
+		}
+		tpls = append(tpls, t)
+	}
+	return tpls, nil
+}
+
 // splitSources 按 | 拆分多源 URL 参数，去空白与空项。
 func splitSources(raw string) []string {
 	var out []string
@@ -1024,7 +1150,7 @@ func (s *server) logSubError(w http.ResponseWriter, r *http.Request, start time.
 		SourceName:  srcName,
 		URLRedacted: redactURL(rawURL),
 		URLFull:     rawURL,
-		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), truthy(q.Get("udp")), truthy(q.Get("tls13")), truthy(q.Get("scv")), truthy(q.Get("strip_emoji")), ""),
+		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), truthy(q.Get("udp")), truthy(q.Get("tls13")), truthy(q.Get("scv")), truthy(q.Get("strip_emoji")), q.Get("template_id")),
 		Status:      "fail",
 		Error:       &errMsg,
 		DurationMS:  time.Since(start).Milliseconds(),

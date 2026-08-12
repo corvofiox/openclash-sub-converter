@@ -300,9 +300,11 @@ async function loadConvertOptions() {
     $('#convSource').innerHTML = srcs.length
       ? '<option value="">请选择订阅源</option>' + srcs.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')
       : '<option value="">（暂无启用的订阅源）</option>';
+    // R4：模板多选 checkbox 区（仅 enabled）；勾选结果 join(',') 赋 template_id
     const tpls = (td.templates || []).filter((t) => t.enabled);
-    $('#convTemplate').innerHTML = '<option value="">（不使用）</option>' +
-      tpls.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('');
+    $('#convTplBox').innerHTML = tpls.length
+      ? tpls.map((t) => `<label class="inline"><input type="checkbox" class="conv-tpl" value="${esc(t.id)}"> ${esc(t.name)}</label>`).join('')
+      : '<span class="hint">（无启用的模板）</span>';
   } catch (e) { /* 顶部 badge 已提示鉴权问题 */ }
 }
 
@@ -321,8 +323,8 @@ function convertBody() {
     scv: $('#convScv').checked,
     strip_emoji: $('#convStripEmoji').checked,
   };
-  const tpl = $('#convTemplate').value;
-  if (tpl) body.template_id = tpl;
+  const tpls = [...document.querySelectorAll('.conv-tpl:checked')].map((c) => c.value);
+  if (tpls.length) body.template_id = tpls.join(',');
   if ($('#tempUrlWrap').open && $('#convUrl').value.trim()) {
     body.url = $('#convUrl').value.trim();
   } else {
@@ -370,6 +372,8 @@ function genSubLink() {
   if ($('#convTls13').checked) q.set('tls13', 'true');
   if ($('#convScv').checked) q.set('scv', 'true');
   if ($('#convStripEmoji').checked) q.set('strip_emoji', 'true');
+  const tpls = [...document.querySelectorAll('.conv-tpl:checked')].map((c) => c.value);
+  if (tpls.length) q.set('template_id', tpls.join(','));
   // window.location.host 已含端口（如 192.168.1.5:25500）；协议跟随当前页面
   // （http/https），避免硬编码 http:// 在反代 TLS 场景下生成错误链接
   return window.location.protocol + '//' + window.location.host + '/sub?' + q.toString();

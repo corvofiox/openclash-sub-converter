@@ -826,6 +826,29 @@ func TestTemplateNameTraversalRejected(t *testing.T) {
 	}
 }
 
+// TestTemplateNameSpecialCharsRejected（P2-1）：模板名含逗号/换行/回车/控制字符
+// → 创建/更新 400（这些字符会拆碎 RULE-SET 规则行或破坏 YAML 行结构，mihomo
+// 语义层拒绝而语法层 output.Validate 放行）。
+func TestTemplateNameSpecialCharsRejected(t *testing.T) {
+	h := newTestServer(t)
+	for _, name := range []string{"Netflix,cn", "a\nb", "a\rb", "a\tb"} {
+		body := fmt.Sprintf(`{"name":%q,"url":"http://x.example.com/rules.yaml","behavior":"domain","format":"yaml"}`, name)
+		rec := doJSON(h, http.MethodPost, "/api/v1/templates", body, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("create name=%q: status = %d, want 400; body=%s", name, rec.Code, rec.Body.String())
+			continue
+		}
+		if msg := decodeErr(t, rec); !strings.Contains(msg, "不能包含逗号/换行") {
+			t.Errorf("create name=%q: err = %q, want 含 不能包含逗号/换行", name, msg)
+		}
+	}
+	tpl := createTemplateViaAPI(t, h, "正常模板", "http://x.example.com/rules.yaml", "domain", "yaml")
+	rec := doJSON(h, http.MethodPut, "/api/v1/templates/"+tpl["id"].(string), `{"name":"a,b"}`, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("update comma name: status = %d, want 400", rec.Code)
+	}
+}
+
 // TestStoreIOErrorMapsTo500（P2-6）落盘 IO 错误（数据目录被破坏）→ 500
 // 「internal error」，而非 404/400；删除失败回滚内存。
 func TestStoreIOErrorMapsTo500(t *testing.T) {
@@ -861,14 +884,16 @@ func TestStoreIOErrorMapsTo500(t *testing.T) {
 func TestSubParamErrorsLogged(t *testing.T) {
 	h, st := newTestServerWithStore(t)
 	src := fakeSource(t, http.StatusOK, subBody())
-	do(h, "/sub")                                            // 缺 url
-	do(h, "/sub?target=surge&url="+url.QueryEscape(src.URL)) // target 错
-	do(h, "/sub?target=clash&src=deadbeef0000")              // src 不可用
-	do(h, "/sub?target=clash&url=notaurl")                   // url 非法
+	// P2-3：参数错误日志同样记录 template_id（与成功路径一致）
+	do(h, "/sub?target=surge&url="+url.QueryEscape(src.URL)+"&template_id=xyz123") // target 错 + template_id
+	do(h, "/sub")                                                                  // 缺 url
+	do(h, "/sub?target=surge&url="+url.QueryEscape(src.URL))                       // target 错
+	do(h, "/sub?target=clash&src=deadbeef0000")                                    // src 不可用
+	do(h, "/sub?target=clash&url=notaurl")                                         // url 非法
 
 	logs := st.ListLogs(10)
-	if len(logs) != 4 {
-		t.Fatalf("logs len = %d, want 4（参数错误也记日志）", len(logs))
+	if len(logs) != 5 {
+		t.Fatalf("logs len = %d, want 5（参数错误也记日志）", len(logs))
 	}
 	for i, e := range logs {
 		if e.Kind != "sub" || e.Status != "fail" || e.Error == nil {
@@ -892,6 +917,10 @@ func TestSubParamErrorsLogged(t *testing.T) {
 	}
 	if logs[3].URLRedacted != "" {
 		t.Errorf("logs[3].URLRedacted = %q, want 空（无 url 参数）", logs[3].URLRedacted)
+	}
+	// logs[4] = 最早请求（target 错 + template_id）：Params 必须带 template_id
+	if tid, _ := logs[4].Params["template_id"].(string); tid != "xyz123" {
+		t.Errorf("logs[4].Params[template_id] = %q, want xyz123", tid)
 	}
 }
 

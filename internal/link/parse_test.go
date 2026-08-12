@@ -582,9 +582,20 @@ func TestParseAnyTLS(t *testing.T) {
 		assertStr(t, e, "server", "example.com")
 		assertInt(t, e, "port", 443)
 		assertStr(t, e, "password", "password")
+		assertBool(t, e, "udp", true) // R1: anytls 与 vless/ss 一致显式声明 udp
 		assertStr(t, e, "sni", "example.com")
 		assertBool(t, e, "skip-cert-verify", true)
 		assertList(t, e, "alpn", []string{"h2", "http/1.1"})
+	})
+
+	t.Run("no-scv-still-udp", func(t *testing.T) {
+		// allowInsecure 缺省/为 0 时无 skip-cert-verify，udp: true 必须仍在（A1）
+		e, err := parseAnyTLS("anytls://password@example.com:443?sni=example.com#no-scv")
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertBool(t, e, "udp", true)
+		assertAbsent(t, e, "skip-cert-verify")
 	})
 
 	t.Run("invalid", func(t *testing.T) {

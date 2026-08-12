@@ -68,8 +68,8 @@
         <label>include 正则 <input type="text" id="convInclude" placeholder="正则，命中保留；多个用 | 分隔，如 日本|香港"></label>
         <label>exclude 正则 <input type="text" id="convExclude" placeholder="正则，命中剔除；多个用 | 分隔，如 剩余|距离|套餐"></label>
         <label>rename 正则 <input type="text" id="convRename" placeholder="格式：正则/替换，多条用 , 分隔，如 日本/JP,香港/HK"></label>
-        <label>规则模板
-          <select id="convTemplate"><option value="">（不使用）</option></select>
+        <label>规则模板（可多选，生成各自专属策略组）
+          <div id="convTplBox" class="tpl-checks"><span class="hint">（加载中…）</span></div>
         </label>
       </div>
       <div class="checks">

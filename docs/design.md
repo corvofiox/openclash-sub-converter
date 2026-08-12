@@ -13,7 +13,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
   → link.ParseSubscription（Base64 订阅 / Clash YAML 订阅 / 单链接）→ []map[string]any (Clash 条目)
   → adapter.ParseProxy 逐条校验（失败跳过+告警日志）→ 规范节点列表
   → transform.Filter + transform.Rename（正则 include/exclude/rename）
-  → groups.Build（手动选择/自动选择/地区组 select|url-test；DIRECT/REJECT 内置出站直接引用、不生成组声明）
+  → groups.Build（手动选择/自动选择/地区组/直连/拒绝组）→ 模板专属组追加（见 5）
   → template.Merge（内置默认模板 / 外部 config 模板）
   → output.Render（YAML 序列化）
   → config.UnmarshalRawConfig 全量校验（失败则 500）
@@ -37,7 +37,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
 ## 3. HTTP API（兼容 subconverter 调用习惯）
 
 ```
-GET /sub?target=clash&url=<URLENCODE，多源用 | 分隔>&include=<regex>&exclude=<regex>&rename=<regex替换格式>&udp=true&tls13=true&scv=true&strip_emoji=true&config=<模板URL>
+GET /sub?target=clash&url=<URLENCODE，多源用 | 分隔>&include=<regex>&exclude=<regex>&rename=<regex替换格式>&udp=true&tls13=true&scv=true&strip_emoji=true&template_id=<id1,id2>&config=<模板URL>
 GET /healthz           → 200 ok
 GET /version           → JSON {version, mihomo}
 ```
@@ -137,7 +137,10 @@ rules:
 ```
 外部 `config` 参数：支持 subconverter 风格 `.ini` 模板的**最小子集**（`[custom]` 段的 include/exclude/rename 忽略——由 URL 参数控制；仅读取分组/规则部分会复杂化，M1 不做），M1 仅支持 URL 参数方式。`config` 参数在 M1 返回 501 或忽略（设计：忽略 + warn 日志，README 注明 M2 支持）。
 
-规则注入：M1 内置最小规则集（GEOIP,CN,DIRECT + MATCH 兜底），rule-provider 引用放 M2。
+规则注入：内置最小规则集（GEOIP,CN,DIRECT + MATCH 兜底）。选中规则模板时注入
+`rule-providers` 段（http 型 provider，path `./ruleset/<模板名>.yaml`）并把
+`RULE-SET,<模板名>,<专属组名>` 插在第一条 MATCH 前；`rule-providers` 为整体覆盖
+段，多模板一次调用全部注入（严禁逐次调用互相覆盖）。
 
 ## 7. 输出校验（internal/output）
 
@@ -277,8 +280,9 @@ api.NewServer（同一 25500 端口）
 
 - convert 请求体：`source_id` 与 `url`（临时，可 `|` 多源）二选一，`source_id`
   优先；`include/exclude/rename` 正则、`udp/tls13/scv` 布尔、`template_id`
-  可选。规则模板注入 = 把模板 URL 写进输出 YAML 的 `rule-providers`，规则集
-  由 OpenClash 侧拉取，本服务不拉取不校验规则内容。
+  可选（逗号分隔多值，任一模板不存在/禁用 → 400）。规则模板注入 = 把模板 URL
+  写进输出 YAML 的 `rule-providers` 并为每个模板生成专属策略组，规则集由
+  OpenClash 侧拉取，本服务不拉取不校验规则内容。
 - 日志响应剔除 `url_full`（完整临时 URL 仅内部 retry 使用，永不外泄）。
 
 ## M3-3 前端（internal/webui/static）
@@ -289,7 +293,8 @@ api.NewServer（同一 25500 端口）
    新增/编辑共用内联表单，编辑时 URL 留空表示不变（列表只回脱敏 URL）；
    启用开关 change 即 PUT。
 2. **订阅转换**：已启用源下拉（或「临时 URL」折叠展开时禁用下拉）；
-   include/exclude/rename + scv/udp/tls13 + 模板下拉；「预览节点」渲染节点/
+   include/exclude/rename + scv/udp/tls13 + 模板多选 checkbox（仅 enabled，
+   勾选结果 `join(',')` 赋 `template_id`）；「预览节点」渲染节点/
    策略组滚动区与耗时；「生成订阅链接」用 `window.location.protocol` +
    `window.location.host` 拼 `/sub?target=clash&src=<id>|url=<enc>`（url 只经
    URLSearchParams 单次编码，绝不预编码，否则服务端解码后仍带 %XX → 400）

@@ -24,6 +24,7 @@ cleanup() {
       */.cache/go-build/*/server) kill -9 $pid 2>/dev/null || true ;;
     esac
   done
+  rm -rf cmd/validate_tmp  # P2-4: set -e 校验失败提前退出也不残留 main.go
 }
 trap cleanup EXIT
 
@@ -78,22 +79,116 @@ GROUPS() { awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' "$1
 curl -s -o $WORK/out1.yaml -w "%{http_code}" "$BASE" > $WORK/code.txt
 check "基础转换 HTTP 200" "200" "$(cat $WORK/code.txt)"
 check "节点数 7" "7" "$(NODES $WORK/out1.yaml)"
-check "组数 8" "8" "$(GROUPS $WORK/out1.yaml)"
+check "组数 10（含直连/拒绝）" "10" "$(GROUPS $WORK/out1.yaml)"
 # R3 段序契约：proxy-groups 在 proxies 前（mihomo 对段落顺序无要求，固定顺序保证产物确定性）
 PG_LN=$(grep -n '^proxy-groups:' $WORK/out1.yaml | cut -d: -f1)
 PX_LN=$(grep -n '^proxies:' $WORK/out1.yaml | cut -d: -f1)
 check "段序 proxy-groups 在 proxies 前" "1" "$([ -n "$PG_LN" ] && [ -n "$PX_LN" ] && [ "$PG_LN" -lt "$PX_LN" ] && echo 1 || echo 0)"
-# 回归：DIRECT/REJECT 是 Clash 内置出站，不得生成空组声明（mihomo 校验 proxy-groups
-# 要求每个组有 proxies/use，内置出站名也无豁免，实测报 'use' or 'proxies' missing）
-check "无 DIRECT 兜底组声明" "0" "$(grep -c -- '- name: DIRECT' $WORK/out1.yaml)"
-check "无 REJECT 兜底组声明" "0" "$(grep -c -- '- name: REJECT' $WORK/out1.yaml)"
 check "手动选择组存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out1.yaml | grep -c '手动选择')"
 check "vless reality 节点" "1" "$(grep -c 'reality-opts' $WORK/out1.yaml)"
+
+# 4.1 R1/R2 策略组结构综合断言（计数式，不依赖输入魔数）：
+# - 直连/拒绝组存在且 proxies 恰为 [DIRECT]/[REJECT]（R1）
+# - 手动组顺序 = 自动选择 → 地区组名（出现序）→ 其他节点组（若有）→
+#   全部节点名（输入序）→ 直连 → 拒绝；引用计数与期望一致（R2）
+# - 组数 = 手动/自动/直连/拒绝 + 地区组数 + 其他节点组（若有）
+cat > $WORK/check_groups.py <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+
+def section(lines, key):
+    out = []
+    f = False
+    for l in lines:
+        if l.startswith(key + ':'):
+            f = True
+            continue
+        if f:
+            if l and not l[0].isspace():
+                break
+            if l.strip():
+                out.append(l)
+    return out
+
+def unquote(v):
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        return v[1:-1]
+    return v
+
+lines = open(path, encoding='utf-8').read().splitlines()
+pg = section(lines, 'proxy-groups')
+px = section(lines, 'proxies')
+# 组条目行键序不定（interval 可能在 name 前），按缩进层级状态机解析
+order, by_name = [], {}
+cur, in_p = None, False
+for l in pg:
+    if l.startswith('  - '):            # 新组条目（2 空格）
+        cur = None
+        in_p = False
+        body = l[4:]
+        if body.startswith('name: '):
+            cur = unquote(body[6:].strip())
+            order.append(cur)
+            by_name[cur] = []
+    elif cur is None and l.startswith('    name: '):   # 组条目行的 name 键
+        cur = unquote(l[10:].strip())
+        order.append(cur)
+        by_name[cur] = []
+    elif cur is not None and l.startswith('    proxies:'):
+        in_p = True
+    elif in_p and cur is not None and l.startswith('      - '):
+        by_name[cur].append(unquote(l.strip()[2:].strip()))
+    else:
+        in_p = False
+node_names = []
+for l in px:
+    if l.startswith('  - name: '):      # 节点条目首行即 name 键
+        node_names.append(unquote(l[9:].strip()))
+    elif l.startswith('    name: '):    # 节点条目内 name 键（4 空格）
+        node_names.append(unquote(l[10:].strip()))
+
+fixed = ('手动选择', '自动选择', '直连', '拒绝', '其他节点')
+region_names = [g for g in order if g not in fixed]
+other = '其他节点' in order
+expect_manual = ['自动选择'] + region_names + (['其他节点'] if other else []) + node_names + ['直连', '拒绝']
+print('direct=%d' % (1 if by_name.get('直连') == ['DIRECT'] else 0))
+print('reject=%d' % (1 if by_name.get('拒绝') == ['REJECT'] else 0))
+print('manual_order=%d' % (1 if by_name.get('手动选择') == expect_manual else 0))
+print('manual_count=%d' % (1 if len(by_name.get('手动选择', [])) == len(expect_manual) else 0))
+print('group_count=%d' % (1 if len(order) == 4 + len(region_names) + (1 if other else 0) else 0))
+# R3：附加组名检查（argv[2]）——专属组 proxies = 全部节点名 + 直连 + 拒绝
+if len(sys.argv) > 2:
+    extra = sys.argv[2]
+    print('extra=%d' % (1 if by_name.get(extra) == node_names + ['直连', '拒绝'] else 0))
+PYEOF
+GCHK=$(python3 $WORK/check_groups.py $WORK/out1.yaml)
+check "R1 直连组存在且 proxies=[DIRECT]" "1" "$(echo "$GCHK" | grep '^direct=' | cut -d= -f2)"
+check "R1 拒绝组存在且 proxies=[REJECT]" "1" "$(echo "$GCHK" | grep '^reject=' | cut -d= -f2)"
+check "R1 组数=4+地区组数+其他组(计数式)" "1" "$(echo "$GCHK" | grep '^group_count=' | cut -d= -f2)"
+check "R2 手动组顺序(自动→地区→节点→直连→拒绝)" "1" "$(echo "$GCHK" | grep '^manual_order=' | cut -d= -f2)"
+check "R2 手动组引用计数=地区+节点+4(计数式)" "1" "$(echo "$GCHK" | grep '^manual_count=' | cut -d= -f2)"
+
+# 4.2 R2 失败源告警三通道：1 好源 + 1 坏源 → YAML 注释 + X-Osc-Warning 头 + JSON warnings
+ENC2=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$SUB_URL|http://127.0.0.1:19999/nope")
+curl -s -D $WORK/warn_hdr.txt -o $WORK/out_warn.yaml -w "%{http_code}" "http://127.0.0.1:$SRV_PORT/sub?target=clash&url=$ENC2" > $WORK/code2.txt
+check "R2 部分失败 200" "200" "$(cat $WORK/code2.txt)"
+check "R2 YAML 含 OSC-WARNING 注释" "1" "$(grep -c '# \[OSC-WARNING\]' $WORK/out_warn.yaml)"
+check "R2 注释含失败 host" "1" "$(grep -c '127.0.0.1:19999' $WORK/out_warn.yaml)"
+check "R2 X-Osc-Warning 响应头" "1" "$(grep -ci 'x-osc-warning' $WORK/warn_hdr.txt)"
+check "R2 正常源节点保留" "7" "$(NODES $WORK/out_warn.yaml)"
+# 全成功 → 无注释、无头（字节级兼容）
+curl -s -D $WORK/ok_hdr.txt -o $WORK/out_ok2.yaml "$BASE"
+check "R2 无失败无注释" "0" "$(grep -c '# \[OSC-WARNING\]' $WORK/out_ok2.yaml)"
+check "R2 无失败无告警头" "0" "$(grep -ci 'x-osc-warning' $WORK/ok_hdr.txt)"
+# convert preview JSON warnings 字段
+WARN_JSON=$(curl -s -X POST -H 'Content-Type: application/json' -d "{\"url\":\"$SUB_URL|http://127.0.0.1:19999/nope\"}" http://127.0.0.1:$SRV_PORT/api/v1/convert/preview)
+check "R2 preview warnings 含坏源" "1" "$(echo "$WARN_JSON" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(1 if any("127.0.0.1:19999" in w for w in d.get("warnings",[])) else 0)')"
 
 # 5. 参数
 check "include=日本 剩2节点" "2" "$(curl -s "$BASE&include=%E6%97%A5%E6%9C%AC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
 check "exclude=日本 剩5节点" "5" "$(curl -s "$BASE&exclude=%E6%97%A5%E6%9C%AC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
-check "rename 生效(2节点×3处)" "6" "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP" | grep -c 'JP0')"
+check "rename 生效(2节点×4处)" "8" "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP" | grep -c 'JP0')"
 # R1 rename 多规则（逗号分隔顺序执行）：日本→JP 与 香港→HK 各自命中（计数 ≥1）
 check "rename 多规则 JP0≥1" "1" "$([ "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP,%E9%A6%99%E6%B8%AF/HK" | grep -c 'JP0')" -ge 1 ] && echo 1 || echo 0)"
 check "rename 多规则 HK0≥1" "1" "$([ "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP,%E9%A6%99%E6%B8%AF/HK" | grep -c 'HK0')" -ge 1 ] && echo 1 || echo 0)"
@@ -212,22 +307,91 @@ check "probe yaml behavior=classical" "classical" "$PROBE_YAML_BEH"
 # #10b: TOK 实例带正确 token（本实例 OSC_ADMIN_TOKEN=s3cret）探测 200
 check "probe TOK 带正确 token 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Token: s3cret' -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" http://127.0.0.1:$TOK_PORT/api/v1/templates/probe)"
 
-# 8. mihomo 全量校验产物
+# 7.8 R3/R4 模板→专属策略组：/sub template_id 单模板/双模板/disabled/非法
+TPL1_CODE=$(curl -s -o $WORK/tpl1.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"Netflix\",\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\",\"behavior\":\"domain\",\"format\":\"text\",\"enabled\":true}" \
+  http://127.0.0.1:$SRV_PORT/api/v1/templates)
+check "创建模板1 Netflix 201" "201" "$TPL1_CODE"
+TPL1=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl1.json"))["template"]["id"])')
+TPL2_CODE=$(curl -s -o $WORK/tpl2.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"name\":\"YouTube\",\"url\":\"http://127.0.0.1:$SRC_PORT/rules_mixed.yaml\",\"behavior\":\"classical\",\"format\":\"yaml\",\"enabled\":true}" \
+  http://127.0.0.1:$SRV_PORT/api/v1/templates)
+check "创建模板2 YouTube 201" "201" "$TPL2_CODE"
+TPL2=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl2.json"))["template"]["id"])')
+
+# 单模板：专属组（7节点+直连+拒绝）+ RULE-SET,Netflix,Netflix 在 MATCH 前 + rule-providers 段
+curl -s -o $WORK/out_tpl1.yaml -w "%{http_code}" "$BASE&template_id=$TPL1" > $WORK/code_tpl1.txt
+check "R3 单模板 /sub 200" "200" "$(cat $WORK/code_tpl1.txt)"
+check "R3 单模板 rule-providers 段" "1" "$(grep -c '^rule-providers:' $WORK/out_tpl1.yaml)"
+check "R3 专属组 Netflix 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl1.yaml | grep -c -- '- name: Netflix')"
+check "R3 专属组 proxies=7节点+直连+拒绝" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl1.yaml Netflix | grep '^extra=' | cut -d= -f2)"
+RS_LN=$(grep -n -- '- RULE-SET,Netflix,Netflix' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
+MCH_LN=$(grep -n -- '- MATCH,手动选择' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
+check "R3 RULE-SET,Netflix,Netflix 在 MATCH 前" "1" "$([ -n "$RS_LN" ] && [ -n "$MCH_LN" ] && [ "$RS_LN" -lt "$MCH_LN" ] && echo 1 || echo 0)"
+
+# 双模板（逗号分隔）：两个专属组 + 两条 RULE-SET + rule-providers 2 条
+curl -s -o $WORK/out_tpl2.yaml -w "%{http_code}" "$BASE&template_id=$TPL1,$TPL2" > $WORK/code_tpl2.txt
+check "R4 双模板 /sub 200" "200" "$(cat $WORK/code_tpl2.txt)"
+check "R4 专属组 Netflix 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl2.yaml | grep -c -- '- name: Netflix')"
+check "R4 专属组 YouTube 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl2.yaml | grep -c -- '- name: YouTube')"
+check "R4 rule-providers 2 条" "2" "$(grep -c 'path: ./ruleset/' $WORK/out_tpl2.yaml)"
+check "R4 RULE-SET 2 条" "2" "$(grep -c -- '- RULE-SET,' $WORK/out_tpl2.yaml)"
+check "R4 专属组内容 Netflix" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml Netflix | grep '^extra=' | cut -d= -f2)"
+check "R4 专属组内容 YouTube" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml YouTube | grep '^extra=' | cut -d= -f2)"
+
+# 7.9 修复轮回归：同名模板 400（P1-2）/ 模板名撞内置出站名（P1-1）/
+# 重复 template_id 去重（P2-2）/ 模板名含逗号换行 400（P2-1）
+TPL3_CODE=$(curl -s -o $WORK/tpl3.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"Netflix","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text","enabled":true}' \
+  http://127.0.0.1:$SRV_PORT/api/v1/templates)
+check "创建同名模板3 Netflix 201（store 允许同名）" "201" "$TPL3_CODE"
+TPL3=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl3.json"))["template"]["id"])')
+check "P1-2 同名模板 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&template_id=$TPL1,$TPL3")"
+TPL4_CODE=$(curl -s -o $WORK/tpl4.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"DIRECT","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text","enabled":true}' \
+  http://127.0.0.1:$SRV_PORT/api/v1/templates)
+check "创建模板4 DIRECT 201" "201" "$TPL4_CODE"
+TPL4=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl4.json"))["template"]["id"])')
+curl -s -o $WORK/out_tpl4.yaml -w "%{http_code}" "$BASE&template_id=$TPL4" > $WORK/code_tpl4.txt
+check "P1-1 模板名撞内置 DIRECT /sub 200" "200" "$(cat $WORK/code_tpl4.txt)"
+check "P1-1 专属组 DIRECT(模板) 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl4.yaml | grep -c -- '- name: DIRECT(模板)')"
+check "P1-1 RULE-SET,DIRECT,DIRECT(模板)" "1" "$(grep -c -- '- RULE-SET,DIRECT,DIRECT(模板)' $WORK/out_tpl4.yaml)"
+curl -s -o $WORK/out_dup.yaml -w "%{http_code}" "$BASE&template_id=$TPL1,$TPL1" > $WORK/code_dup.txt
+check "P2-2 重复 template_id /sub 200" "200" "$(cat $WORK/code_dup.txt)"
+check "P2-2 重复 id 去重 rule-providers 1 条" "1" "$(grep -c 'path: ./ruleset/' $WORK/out_dup.yaml)"
+check "P2-1 模板名含逗号 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"Netflix,cn","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/templates)"
+check "P2-1 模板名含换行 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"a\nb","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/templates)"
+
+# disabled / 不存在 / 多值任一非法 → 400；无模板输出无 rule-providers 段（A7）
+curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+  -d '{"enabled":false}' http://127.0.0.1:$SRV_PORT/api/v1/templates/$TPL1 > $WORK/code_dis.txt
+check "禁用模板1 200" "200" "$(cat $WORK/code_dis.txt)"
+check "R4 disabled 模板 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&template_id=$TPL1")"
+check "R4 不存在模板 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&template_id=deadbeef0000")"
+check "R4 多值含非法 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&template_id=$TPL2,deadbeef0000")"
+check "R3 无模板无 rule-providers 段(A7)" "0" "$(grep -c '^rule-providers:' $WORK/out1.yaml)"
+
+# 8. mihomo 全量校验产物（无模板 / 单模板 / 双模板）
+# P2-4: set -e 下校验命令失败会提前退出——先清旧残留再建目录，cleanup trap 兜底，
+# 防止 cmd/validate_tmp 残留 main.go 污染仓库（后续 go build ./... 会当包编译）。
+rm -rf cmd/validate_tmp
 mkdir -p cmd/validate_tmp
 cat > cmd/validate_tmp/main.go <<EOF
 package main
 import ("fmt"; "os"; mihomoconfig "github.com/metacubex/mihomo/config")
 func main() {
-    data, err := os.ReadFile("$WORK/out1.yaml")
-    if err != nil { fmt.Println("READ_FAIL:", err); os.Exit(1) }
-    cfg, err := mihomoconfig.UnmarshalRawConfig(data)
-    if err != nil { fmt.Println("VALIDATE_FAIL:", err); os.Exit(1) }
-    fmt.Printf("VALIDATE_OK mixed-port=%d mode=%s\n", cfg.MixedPort, cfg.Mode)
+    for _, p := range os.Args[1:] {
+        data, err := os.ReadFile(p)
+        if err != nil { fmt.Println("READ_FAIL:", err); os.Exit(1) }
+        cfg, err := mihomoconfig.UnmarshalRawConfig(data)
+        if err != nil { fmt.Println("VALIDATE_FAIL:", err); os.Exit(1) }
+        fmt.Printf("VALIDATE_OK %s mixed-port=%d mode=%s\n", p, cfg.MixedPort, cfg.Mode)
+    }
 }
 EOF
-VOUT=$(go run ./cmd/validate_tmp 2>&1 | tail -1)
+VOUT=$(go run ./cmd/validate_tmp $WORK/out1.yaml $WORK/out_tpl1.yaml $WORK/out_tpl2.yaml 2>&1)
 rm -rf cmd/validate_tmp
-check "mihomo 校验" "1" "$(echo "$VOUT" | grep -c VALIDATE_OK)"
+check "mihomo 校验 3 产物" "3" "$(echo "$VOUT" | grep -c VALIDATE_OK)"
 
 echo "=============================="
 echo "冒烟结果: PASS=$PASS FAIL=$FAIL (服务端口 $SRV_PORT 源端口 $SRC_PORT)"

@@ -205,7 +205,8 @@ func TestBuildMultiSourceGroups(t *testing.T) {
 
 	// GroupManual 组名顺序：地区组按首次出现，其他节点恒最后
 	manual := findGroup(t, groups, GroupManual)
-	wantManual := []string{"DIRECT", GroupAuto, "香港节点", "日本节点", "澳大利亚节点", GroupOther}
+	// R2：手动组 = 自动选择 + 地区组名（出现序）+ 其他节点组 + 全部节点名（输入顺序）+ 直连组 + 拒绝组
+	wantManual := []string{GroupAuto, "香港节点", "日本节点", "澳大利亚节点", GroupOther, "香港01", "HK-01", "🇭🇰 香港 02", "Tokyo-2", "Australia-01", "无标识节点", GroupDirect, GroupReject}
 	if got := proxies(manual); !reflect.DeepEqual(got, wantManual) {
 		t.Errorf("manual proxies = %v, want %v", got, wantManual)
 	}

@@ -31,13 +31,13 @@ func TestApplyEmptyNoop(t *testing.T) {
 	before := map[string]any{
 		"rules": append([]any{}, cfg["rules"].([]any)...),
 	}
-	if err := ApplyRuleProviders(cfg, nil, ""); err != nil {
+	if err := ApplyRuleProviders(cfg, nil); err != nil {
 		t.Fatalf("空 rps: %v", err)
 	}
 	if !reflect.DeepEqual(cfg, before) {
 		t.Errorf("空 rps 不应改动 cfg: got %+v, want %+v", cfg, before)
 	}
-	if err := ApplyRuleProviders(cfg, []RuleProvider{}, "手动选择"); err != nil {
+	if err := ApplyRuleProviders(cfg, []RuleProvider{}); err != nil {
 		t.Fatalf("空切片 rps: %v", err)
 	}
 	if !reflect.DeepEqual(cfg, before) {
@@ -49,7 +49,7 @@ func TestApplyEmptyNoop(t *testing.T) {
 // 顺序保持。
 func TestInjectStructure(t *testing.T) {
 	cfg := baseRulesCfg()
-	if err := ApplyRuleProviders(cfg, sampleRPs(), "手动选择"); err != nil {
+	if err := ApplyRuleProviders(cfg, sampleRPs()); err != nil {
 		t.Fatalf("ApplyRuleProviders: %v", err)
 	}
 
@@ -97,10 +97,15 @@ func TestInjectStructure(t *testing.T) {
 	}
 }
 
-// TestNoMatchAppendsToEnd 无 MATCH 行 → RULE-SET 追加到末尾。
+// TestNoMatchAppendsToEnd 无 MATCH 行 → RULE-SET 追加到末尾；
+// rp 显式 TargetGroup 生效（不再依赖全局参数）。
 func TestNoMatchAppendsToEnd(t *testing.T) {
 	cfg := map[string]any{"rules": []any{"DOMAIN-SUFFIX,example.com,DIRECT"}}
-	if err := ApplyRuleProviders(cfg, sampleRPs(), "DIRECT"); err != nil {
+	rps := []RuleProvider{
+		{Name: "cn-domains", URL: "https://example.com/cn.yaml", Behavior: "domain", Format: "yaml", TargetGroup: "DIRECT"},
+		{Name: "cn-ips", URL: "https://example.com/ips.txt", Behavior: "ipcidr", Format: "text", TargetGroup: "DIRECT"},
+	}
+	if err := ApplyRuleProviders(cfg, rps); err != nil {
 		t.Fatalf("ApplyRuleProviders: %v", err)
 	}
 	rules := cfg["rules"].([]any)
@@ -114,10 +119,10 @@ func TestNoMatchAppendsToEnd(t *testing.T) {
 	}
 }
 
-// TestDefaultTargetGroup targetGroup 空串 → 默认「手动选择」。
+// TestDefaultTargetGroup rp.TargetGroup 空串 → 默认「手动选择」。
 func TestDefaultTargetGroup(t *testing.T) {
 	cfg := baseRulesCfg()
-	if err := ApplyRuleProviders(cfg, sampleRPs(), ""); err != nil {
+	if err := ApplyRuleProviders(cfg, sampleRPs()); err != nil {
 		t.Fatalf("ApplyRuleProviders: %v", err)
 	}
 	rules := cfg["rules"].([]any)
@@ -135,7 +140,7 @@ func TestInvalidNameRejected(t *testing.T) {
 	for _, name := range badNames {
 		cfg := baseRulesCfg()
 		rps := []RuleProvider{{Name: name, URL: "https://e.com/x.yaml", Behavior: "domain", Format: "yaml"}}
-		err := ApplyRuleProviders(cfg, rps, "")
+		err := ApplyRuleProviders(cfg, rps)
 		if err == nil {
 			t.Errorf("Name %q: want error, got nil", name)
 			continue
@@ -158,10 +163,41 @@ func TestValidateRuleProviderName(t *testing.T) {
 			t.Errorf("ValidateRuleProviderName(%q) = nil, want error", bad)
 		}
 	}
+	// P2-1：逗号/换行/回车/控制字符同样拒绝（会拆碎 RULE-SET 行或破坏 YAML 行结构）
+	for _, bad := range []string{"a,b", "a\nb", "a\rb", "a\tb", "a\x00b"} {
+		err := ValidateRuleProviderName(bad)
+		if err == nil {
+			t.Errorf("ValidateRuleProviderName(%q) = nil, want error", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "不能包含逗号/换行") {
+			t.Errorf("ValidateRuleProviderName(%q) err = %q, want 含 不能包含逗号/换行", bad, err)
+		}
+	}
 	for _, good := range []string{"广告拦截", "cn-domains", "a.b", "abc"} {
 		if err := ValidateRuleProviderName(good); err != nil {
 			t.Errorf("ValidateRuleProviderName(%q) = %v, want nil", good, err)
 		}
+	}
+}
+
+// TestDuplicateNameRejected（P1-2 防御层）：rps 中同名 rule-provider → error，
+// cfg 不被污染（调用方应在上游拦截同名模板返回 400）。
+func TestDuplicateNameRejected(t *testing.T) {
+	cfg := baseRulesCfg()
+	rps := []RuleProvider{
+		{Name: "netflix", URL: "https://example.com/nf.yaml", Behavior: "domain", Format: "yaml"},
+		{Name: "netflix", URL: "https://example.com/nf2.yaml", Behavior: "domain", Format: "yaml"},
+	}
+	err := ApplyRuleProviders(cfg, rps)
+	if err == nil || !strings.Contains(err.Error(), "重复") {
+		t.Fatalf("err = %v, want 含 重复", err)
+	}
+	if _, ok := cfg["rule-providers"]; ok {
+		t.Errorf("报错后 cfg 仍被注入 rule-providers")
+	}
+	if rules, ok := cfg["rules"].([]any); !ok || len(rules) != 2 {
+		t.Errorf("rules = %v, want 未被修改（GEOIP + MATCH）", cfg["rules"])
 	}
 }
 
@@ -178,7 +214,7 @@ func TestValidationErrors(t *testing.T) {
 		{RuleProvider{Name: "x", URL: "https://e.com", Behavior: "classical", Format: ""}, "format"},
 	}
 	for _, tc := range cases {
-		err := ApplyRuleProviders(baseRulesCfg(), []RuleProvider{tc.rp}, "")
+		err := ApplyRuleProviders(baseRulesCfg(), []RuleProvider{tc.rp})
 		if err == nil {
 			t.Errorf("%+v: want error, got nil", tc.rp)
 			continue
@@ -211,7 +247,7 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 		{Name: "cn-ips", URL: "https://example.com/ips.txt", Behavior: "ipcidr", Format: "text"},
 		{Name: "global", URL: "https://example.com/g.txt", Behavior: "classical", Format: "text"},
 	}
-	if err := ApplyRuleProviders(cfg, rps, ""); err != nil {
+	if err := ApplyRuleProviders(cfg, rps); err != nil {
 		t.Fatalf("ApplyRuleProviders: %v", err)
 	}
 	data, err := output.Render(cfg)
@@ -246,5 +282,46 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 	}
 	if rules[4].(string) != "MATCH,手动选择" {
 		t.Errorf("rules[4] = %q, want MATCH 在最后", rules[4])
+	}
+}
+
+// TestPerRPTargetGroup（R3 验收 A3/A4）：混用默认与显式 TargetGroup——每个 rp 的
+// RULE-SET 行目标 = 各自的 TargetGroup（空串回退「手动选择」），互不干扰。
+func TestPerRPTargetGroup(t *testing.T) {
+	cfg := baseRulesCfg()
+	rps := []RuleProvider{
+		// 显式专属组（模板专属场景）
+		{Name: "netflix", URL: "https://example.com/nf.yaml", Behavior: "domain", Format: "yaml", TargetGroup: "Netflix"},
+		// 空 TargetGroup → 默认「手动选择」
+		{Name: "ads", URL: "https://example.com/ads.yaml", Behavior: "domain", Format: "yaml"},
+		// 第二个专属组
+		{Name: "youtube", URL: "https://example.com/yt.yaml", Behavior: "classical", Format: "text", TargetGroup: "YouTube"},
+	}
+	if err := ApplyRuleProviders(cfg, rps); err != nil {
+		t.Fatalf("ApplyRuleProviders: %v", err)
+	}
+	rules, ok := cfg["rules"].([]any)
+	if !ok {
+		t.Fatalf("rules = %T, want []any", cfg["rules"])
+	}
+	want := []any{
+		"GEOIP,CN,DIRECT",
+		"RULE-SET,netflix,Netflix",
+		"RULE-SET,ads,手动选择",
+		"RULE-SET,youtube,YouTube",
+		"MATCH,手动选择",
+	}
+	if !reflect.DeepEqual(rules, want) {
+		t.Errorf("rules = %v, want %v", rules, want)
+	}
+	// rule-providers 段包含全部 3 个 provider（整体覆盖一次调用）
+	rps2, ok := cfg["rule-providers"].(map[string]any)
+	if !ok || len(rps2) != 3 {
+		t.Errorf("rule-providers = %T len %d, want map len 3", cfg["rule-providers"], len(rps2))
+	}
+	for _, name := range []string{"netflix", "ads", "youtube"} {
+		if _, ok := rps2[name]; !ok {
+			t.Errorf("rule-providers 缺 %s", name)
+		}
 	}
 }

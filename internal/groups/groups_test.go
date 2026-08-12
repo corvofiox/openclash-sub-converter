@@ -57,7 +57,8 @@ func TestBuildMixedRegions(t *testing.T) {
 	if manual["type"] != "select" {
 		t.Errorf("manual type = %v, want select", manual["type"])
 	}
-	wantManual := []string{"DIRECT", GroupAuto, "香港节点", "日本节点", "新加坡节点", GroupOther}
+	// R2：手动组 = 自动选择 + 地区组名（出现序）+ 其他节点组 + 全部节点名（输入顺序）+ 直连组 + 拒绝组
+	wantManual := []string{GroupAuto, "香港节点", "日本节点", "新加坡节点", GroupOther, "🇭🇰 香港 01", "🇭🇰 香港 02", "🇯🇵 日本 01", "新加坡 01", "🇨🇳 大陆 01", GroupDirect, GroupReject}
 	if got := proxies(manual); !reflect.DeepEqual(got, wantManual) {
 		t.Errorf("manual proxies = %v, want %v", got, wantManual)
 	}
@@ -91,7 +92,20 @@ func TestBuildMixedRegions(t *testing.T) {
 		t.Errorf("other proxies = %v", got)
 	}
 
-	// DIRECT/REJECT 是 Clash 内置出站：不生成组声明，但手动选择组 proxies 仍引用 DIRECT（见上）
+	// R1：直连/拒绝组存在（type=select，proxies 恰为 [DIRECT]/[REJECT]），
+	// 声明位置在其他节点组之后（组列表尾部）
+	direct := findGroup(t, groups, GroupDirect)
+	if direct["type"] != "select" || !reflect.DeepEqual(proxies(direct), []string{"DIRECT"}) {
+		t.Errorf("直连 group = %v, want type=select proxies=[DIRECT]", direct)
+	}
+	reject := findGroup(t, groups, GroupReject)
+	if reject["type"] != "select" || !reflect.DeepEqual(proxies(reject), []string{"REJECT"}) {
+		t.Errorf("拒绝 group = %v, want type=select proxies=[REJECT]", reject)
+	}
+	names := groupNames(groups)
+	if names[len(names)-1] != GroupReject || names[len(names)-2] != GroupDirect {
+		t.Errorf("直连/拒绝应在组列表尾部（其他节点组之后），实际尾部 = %v", names[len(names)-2:])
+	}
 }
 
 func TestBuildMoreRegions(t *testing.T) {
@@ -142,16 +156,23 @@ func TestBuildEmptyNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build(nil) error: %v", err)
 	}
-	if got := groupNames(groups); !reflect.DeepEqual(got, []string{GroupManual, GroupAuto}) {
-		t.Errorf("groups = %v, want [%s %s]", got, GroupManual, GroupAuto)
+	// R1：无节点时也生成直连/拒绝组（用户明确要求）
+	if got := groupNames(groups); !reflect.DeepEqual(got, []string{GroupManual, GroupAuto, GroupDirect, GroupReject}) {
+		t.Errorf("groups = %v, want [%s %s %s %s]", got, GroupManual, GroupAuto, GroupDirect, GroupReject)
 	}
 	manual := findGroup(t, groups, GroupManual)
-	if got := proxies(manual); !reflect.DeepEqual(got, []string{"DIRECT", GroupAuto}) {
-		t.Errorf("manual proxies = %v, want [DIRECT %s]", got, GroupAuto)
+	if got := proxies(manual); !reflect.DeepEqual(got, []string{GroupAuto, GroupDirect, GroupReject}) {
+		t.Errorf("manual proxies = %v, want [%s %s %s]", got, GroupAuto, GroupDirect, GroupReject)
 	}
 	auto := findGroup(t, groups, GroupAuto)
 	if got := proxies(auto); len(got) != 0 {
 		t.Errorf("auto proxies = %v, want empty", got)
+	}
+	if got := proxies(findGroup(t, groups, GroupDirect)); !reflect.DeepEqual(got, []string{"DIRECT"}) {
+		t.Errorf("直连 proxies = %v, want [DIRECT]", got)
+	}
+	if got := proxies(findGroup(t, groups, GroupReject)); !reflect.DeepEqual(got, []string{"REJECT"}) {
+		t.Errorf("拒绝 proxies = %v, want [REJECT]", got)
 	}
 }
 
@@ -167,8 +188,9 @@ func TestBuildOnlyUnknown(t *testing.T) {
 	}
 	// 手动选择应包含其他节点组
 	manual := findGroup(t, groups, GroupManual)
-	if got := proxies(manual); !reflect.DeepEqual(got, []string{"DIRECT", GroupAuto, GroupOther}) {
-		t.Errorf("manual proxies = %v, want [DIRECT %s %s]", got, GroupAuto, GroupOther)
+	// R2：手动组 = 自动选择 + 其他节点组 + 全部节点名 + 直连/拒绝
+	if got := proxies(manual); !reflect.DeepEqual(got, []string{GroupAuto, GroupOther, "无 emoji 节点", "🇨🇳 大陆 01", GroupDirect, GroupReject}) {
+		t.Errorf("manual proxies = %v, want [%s %s %s %s]", got, GroupAuto, GroupOther, GroupDirect, GroupReject)
 	}
 }
 
@@ -196,4 +218,34 @@ func TestBuildEmojiInMiddleOfName(t *testing.T) {
 		t.Fatalf("Build error: %v", err)
 	}
 	findGroup(t, groups, "香港节点")
+}
+
+// TestBuildManualAllNodesOrder（R2 验收）：3 节点（港/日/美 各 1）手动选择组
+// proxies = [自动选择, 3 地区组名（出现序）, 3 节点名（输入顺序）, 直连组, 拒绝组]。
+func TestBuildManualAllNodesOrder(t *testing.T) {
+	nodes := []map[string]any{
+		node("🇭🇰 香港-x"),
+		node("🇯🇵 日本-y"),
+		node("🇺🇸 美国-z"),
+	}
+	groups, err := Build(nodes)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	manual := findGroup(t, groups, GroupManual)
+	want := []string{GroupAuto, "香港节点", "日本节点", "美国节点", "🇭🇰 香港-x", "🇯🇵 日本-y", "🇺🇸 美国-z", GroupDirect, GroupReject}
+	if got := proxies(manual); !reflect.DeepEqual(got, want) {
+		t.Errorf("manual proxies = %v, want %v", got, want)
+	}
+	// 含不可识别节点时：其他节点组插在地区组名之后、节点名之前
+	nodes = append(nodes, node("unknown-node"))
+	groups, err = Build(nodes)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	manual = findGroup(t, groups, GroupManual)
+	want = []string{GroupAuto, "香港节点", "日本节点", "美国节点", GroupOther, "🇭🇰 香港-x", "🇯🇵 日本-y", "🇺🇸 美国-z", "unknown-node", GroupDirect, GroupReject}
+	if got := proxies(manual); !reflect.DeepEqual(got, want) {
+		t.Errorf("manual proxies with other = %v, want %v", got, want)
+	}
 }

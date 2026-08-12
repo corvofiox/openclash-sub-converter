@@ -14,6 +14,11 @@ const (
 	GroupManual = "手动选择"
 	GroupAuto   = "自动选择"
 	GroupOther  = "其他节点"
+
+	// R1：直连/拒绝策略组（type=select，proxies 分别为 [DIRECT]/[REJECT]，
+	// 供手动选择组与模板专属组作为快捷切换引用）。
+	GroupDirect = "直连"
+	GroupReject = "拒绝"
 )
 
 // regionGroup 是一个地区策略组的中间表示。
@@ -22,19 +27,23 @@ type regionGroup struct {
 	nodes  []string
 }
 
-// Build 根据节点列表构建策略组列表：
+// Build 根据节点列表构建策略组列表（组声明顺序）：
 //
-//   - "手动选择" type=select，proxies=[DIRECT, 自动选择, <地区组名...>]；
-//   - "自动选择" type=url-test，proxies=[全部节点名]（去重）；
-//   - 地区组：按节点名识别地区（emoji/中文/拼音/英文/ISO 代码五层线索，取名字中
+//  1. "手动选择" type=select（proxies 依赖其余组名，最后填充）；
+//  2. "自动选择" type=url-test，proxies=[全部节点名]（去重）；
+//  3. 地区组：按节点名识别地区（emoji/中文/拼音/英文/ISO 代码五层线索，取名字中
 //     第一个地区线索），组名 "<地区>节点" 格式，type=url-test，
 //     url/interval 固定；节点数 0 的地区不生成组；
-//   - 无任何地区线索或无法识别的节点归入 "其他节点" 组；
-//   - DIRECT/REJECT 为 Clash 内置出站，不在 proxy-groups 里声明——空组声明会被
-//     mihomo 判为非法（'use' or 'proxies' missing，内置出站名也无豁免）；
-//     手动选择组 proxies 与 rules 中直接引用即可。
+//  4. 无任何地区线索或无法识别的节点归入 "其他节点" 组（无此类节点则不生成）；
+//  5. "直连"/"拒绝"：type=select，proxies 分别为 [DIRECT]/[REJECT]
+//     （R1；DIRECT/REJECT 是 Clash 内置出站，组非空故合法）。
 //
-// 节点名重复时去重（同一节点只进一个组）。空节点列表仍输出手动选择/自动选择，不报错。
+// 手动选择组 proxies 顺序（R2）：
+// [自动选择, <地区组名...按出现序>, 其他节点组(若存在), <全部去重节点名...>,
+// 直连组, 拒绝组]——不再直接引用裸 DIRECT/REJECT，由「直连」/「拒绝」组承载。
+//
+// 节点名重复时去重（同一节点只进一个组）。空节点列表仍输出手动选择/自动选择/
+// 直连/拒绝（用户明确要求无节点时也生成直连/拒绝组），不报错。
 func Build(nodes []map[string]any) ([]map[string]any, error) {
 	seenName := make(map[string]bool)
 	var allNames []string
@@ -65,9 +74,10 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 		rg.nodes = append(rg.nodes, name)
 	}
 
-	// 收集组名（地区组按首次出现顺序，其他节点组放最后）。
-	manualProxies := []any{"DIRECT", GroupAuto}
-	groups := make([]map[string]any, 0, 3+len(regions))
+	// 手动选择组 proxies（R2 顺序）：自动选择 → 地区组名（按出现序）→
+	// 其他节点组（若存在）→ 全部去重节点名 → 直连组 → 拒绝组。
+	manualProxies := []any{GroupAuto}
+	groups := make([]map[string]any, 0, 5+len(regions)) // 手动+自动+直连+拒绝+地区组
 
 	// 1. 手动选择（先收集组名，故先建地区组再填 proxies）
 	autoProxies := make([]any, 0, len(allNames))
@@ -117,7 +127,18 @@ func Build(nodes []map[string]any) ([]map[string]any, error) {
 		})
 	}
 
-	// 5. 手动选择（proxies 依赖上面组名，最后填充）
+	// 5. 直连/拒绝（R1：其他节点组之后声明；DIRECT/REJECT 为 Clash 内置出站，
+	// 组非空故合法，mihomo 校验通过）
+	for _, name := range allNames {
+		manualProxies = append(manualProxies, name)
+	}
+	manualProxies = append(manualProxies, GroupDirect, GroupReject)
+	groups = append(groups,
+		map[string]any{"name": GroupDirect, "type": "select", "proxies": []any{"DIRECT"}},
+		map[string]any{"name": GroupReject, "type": "select", "proxies": []any{"REJECT"}},
+	)
+
+	// 6. 手动选择（proxies 依赖上面组名，最后填充）
 	manual := map[string]any{
 		"name":    GroupManual,
 		"type":    "select",

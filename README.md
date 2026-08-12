@@ -9,7 +9,7 @@ OpenClash 订阅转换工具是一个轻量级 HTTP 服务（Go 单二进制，�
 
 - **多源聚合**：一次请求拉取多个机场订阅（`|` 分隔），自动识别 Base64 订阅 / Clash YAML / 单条协议链接（ss、ssr、vmess、vless、trojan、hysteria2、hysteria、tuic、anytls、socks5、http）
 - **可控命名**：`include` / `exclude` / `rename` 正则过滤与重命名，节点名/策略组名完全可控，与 OpenClash 自定义规则命名契约对齐
-- **策略组自动构建**：手动选择 / 自动选择 / 按 emoji/中文/拼音/英文/ISO 代码自动识别地区并分组（**组名不带 emoji**，如「香港节点」）/ DIRECT、REJECT 内置出站直接引用（不生成空组声明）
+- **策略组自动构建**：手动选择（自动选择 → 地区组 → 其他节点 → 全节点 → 直连 → 拒绝）/ 自动选择 / 按 emoji/中文/拼音/英文/ISO 代码自动识别地区并分组（**组名不带 emoji**，如「香港节点」）/ 「直连」「拒绝」专属策略组（proxies 恰为 `[DIRECT]` / `[REJECT]`）/ 规则模板 → 每个模板生成独立专属策略组（RULE-SET 指向该组）
 - **输出可靠**：YAML 渲染后调用 mihomo `config.UnmarshalRawConfig` 全量校验，保证 OpenClash 可直接消费
 - **安全**：订阅 URL 凭证不出现在日志与错误消息中（只记 host）；响应 `Cache-Control: no-store`
 
@@ -63,6 +63,7 @@ GET /sub?target=clash&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=
 | `tls13` | 否 | `true`/`1` 时 ss/trojan/http 节点输出 `tls13: true` |
 | `scv` | 否 | `true`/`1` 时 vmess/vless/trojan/hysteria2/tuic/anytls 节点输出 `skip-cert-verify: true` |
 | `strip_emoji` | 否 | `true`/`1` 时节点名剥离 emoji（旗标/符号/VS16/ZWJ；保留空格与分隔符；剥离后重名自动加序号；识别仍基于原始名） |
+| `template_id` | 否 | 规则模板 ID，逗号分隔多值（如 `tpl1,tpl2`）；每个模板生成一个专属策略组并注入 `rule-providers`（RULE-SET 指向对应专属组）；任一模板不存在或已禁用返回 400 |
 
 成功响应：`200`，`Content-Type: text/yaml; charset=utf-8`，`Cache-Control: no-store`，body 为完整 Clash YAML（mixed-port 7893、allow-lan、fake-ip DNS、proxy-groups、proxies、GEOIP,CN,DIRECT + MATCH 规则，proxy-groups 段在 proxies 段之前）。
 
@@ -95,7 +96,7 @@ go run ./cmd/server
 internal/link        协议链接解析 → Clash 条目（自研，Base64 订阅 / YAML 订阅 / 单链接）
 internal/fetcher     HTTP 拉取订阅源（自定义 UA、超时、内存缓存 TTL、10MB 上限）
 internal/transform   节点过滤/重命名（include/exclude/rename 正则）
-internal/groups      策略组构建（手动/自动/地区组；DIRECT/REJECT 内置出站直接引用）
+internal/groups      策略组构建（手动/自动/地区组/直连/拒绝；模板专属组在 api 层追加）
 internal/template    配置组装（默认模板 + udp/tls13/scv 选项）
 internal/output      YAML 渲染 + mihomo config.UnmarshalRawConfig 全量校验
 internal/api         HTTP 路由（slog 请求日志、错误脱敏）

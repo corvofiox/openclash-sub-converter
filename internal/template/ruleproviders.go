@@ -77,7 +77,7 @@ func ApplyRuleProviders(cfg map[string]any, rps []RuleProvider) error {
 	}
 
 	providers := make(map[string]any, len(rps))
-	ruleSets := make([]string, 0, len(rps))
+	ruleSets := make([]any, 0, len(rps))
 	for _, rp := range rps {
 		if err := validateRuleProvider(rp); err != nil {
 			return err

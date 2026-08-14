@@ -45,7 +45,7 @@ func TestApplyEmptyNoop(t *testing.T) {
 	}
 }
 
-// TestInjectStructure 注入后结构正确：rule-providers 段、RULE-SET 在 MATCH 前、
+// TestInjectStructure 注入后结构正确：rule-providers 段、RULE-SET 在列表最前、
 // 顺序保持。
 func TestInjectStructure(t *testing.T) {
 	cfg := baseRulesCfg()
@@ -81,15 +81,15 @@ func TestInjectStructure(t *testing.T) {
 		t.Errorf("cn-ips entry = %+v", ipEntry)
 	}
 
-	// rules：RULE-SET 按序插在 MATCH 之前
+	// rules：RULE-SET 按序插在列表最前（GEOIP,CN,DIRECT 之前）
 	rules, ok := cfg["rules"].([]any)
 	if !ok {
 		t.Fatalf("rules = %T, want []any", cfg["rules"])
 	}
 	wantRules := []any{
-		"GEOIP,CN,DIRECT",
 		"RULE-SET,cn-domains,手动选择",
 		"RULE-SET,cn-ips,手动选择",
+		"GEOIP,CN,DIRECT",
 		"MATCH,手动选择",
 	}
 	if !reflect.DeepEqual(rules, wantRules) {
@@ -97,9 +97,9 @@ func TestInjectStructure(t *testing.T) {
 	}
 }
 
-// TestNoMatchAppendsToEnd 无 MATCH 行 → RULE-SET 追加到末尾；
+// TestNoMatchPrependsToFront 无 MATCH 行 → RULE-SET 仍在列表最前；
 // rp 显式 TargetGroup 生效（不再依赖全局参数）。
-func TestNoMatchAppendsToEnd(t *testing.T) {
+func TestNoMatchPrependsToFront(t *testing.T) {
 	cfg := map[string]any{"rules": []any{"DOMAIN-SUFFIX,example.com,DIRECT"}}
 	rps := []RuleProvider{
 		{Name: "cn-domains", URL: "https://example.com/cn.yaml", Behavior: "domain", Format: "yaml", TargetGroup: "DIRECT"},
@@ -110,9 +110,9 @@ func TestNoMatchAppendsToEnd(t *testing.T) {
 	}
 	rules := cfg["rules"].([]any)
 	want := []any{
-		"DOMAIN-SUFFIX,example.com,DIRECT",
 		"RULE-SET,cn-domains,DIRECT",
 		"RULE-SET,cn-ips,DIRECT",
+		"DOMAIN-SUFFIX,example.com,DIRECT",
 	}
 	if !reflect.DeepEqual(rules, want) {
 		t.Errorf("rules = %v, want %v", rules, want)
@@ -156,7 +156,7 @@ func TestInvalidNameRejected(t *testing.T) {
 }
 
 // TestValidateRuleProviderName（P2-5）导出校验函数：空名/路径穿越拒绝，
-// 合法名通过（API/store 层在创建/更新模板前调用）。
+// 合法名通过（API/store 层在创建/更新规则集前调用）。
 func TestValidateRuleProviderName(t *testing.T) {
 	for _, bad := range []string{"", "../evil", "a/b", `a\b`, "a..b", "..", "x/../y"} {
 		if err := ValidateRuleProviderName(bad); err == nil {
@@ -182,7 +182,7 @@ func TestValidateRuleProviderName(t *testing.T) {
 }
 
 // TestDuplicateNameRejected（P1-2 防御层）：rps 中同名 rule-provider → error，
-// cfg 不被污染（调用方应在上游拦截同名模板返回 400）。
+// cfg 不被污染（调用方应在上游拦截同名规则集返回 400）。
 func TestDuplicateNameRejected(t *testing.T) {
 	cfg := baseRulesCfg()
 	rps := []RuleProvider{
@@ -272,13 +272,13 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 		t.Fatalf("re-parse rendered yaml: %v", err)
 	}
 	// Build 自带 2 条规则（GEOIP + MATCH），注入 3 条 RULE-SET 后共 5 条，
-	// RULE-SET 完整行位于 GEOIP 之后、MATCH 之前。
+	// RULE-SET 完整行位于列表最前（GEOIP 之前），MATCH 仍在最后。
 	rules, ok := back["rules"].([]any)
 	if !ok || len(rules) != 5 {
 		t.Fatalf("re-parsed rules = %T len %d, want []any len 5", back["rules"], len(rules))
 	}
-	if rules[1].(string) != "RULE-SET,cn-domains,手动选择" {
-		t.Errorf("rules[1] = %q, want RULE-SET 完整行", rules[1])
+	if rules[0].(string) != "RULE-SET,cn-domains,手动选择" {
+		t.Errorf("rules[0] = %q, want RULE-SET 完整行", rules[0])
 	}
 	if rules[4].(string) != "MATCH,手动选择" {
 		t.Errorf("rules[4] = %q, want MATCH 在最后", rules[4])
@@ -290,7 +290,7 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 func TestPerRPTargetGroup(t *testing.T) {
 	cfg := baseRulesCfg()
 	rps := []RuleProvider{
-		// 显式专属组（模板专属场景）
+		// 显式专属组（规则集专属场景）
 		{Name: "netflix", URL: "https://example.com/nf.yaml", Behavior: "domain", Format: "yaml", TargetGroup: "Netflix"},
 		// 空 TargetGroup → 默认「手动选择」
 		{Name: "ads", URL: "https://example.com/ads.yaml", Behavior: "domain", Format: "yaml"},
@@ -305,10 +305,10 @@ func TestPerRPTargetGroup(t *testing.T) {
 		t.Fatalf("rules = %T, want []any", cfg["rules"])
 	}
 	want := []any{
-		"GEOIP,CN,DIRECT",
 		"RULE-SET,netflix,Netflix",
 		"RULE-SET,ads,手动选择",
 		"RULE-SET,youtube,YouTube",
+		"GEOIP,CN,DIRECT",
 		"MATCH,手动选择",
 	}
 	if !reflect.DeepEqual(rules, want) {

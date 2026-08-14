@@ -1,5 +1,5 @@
 // 管理台 REST API / 新增行为测试：BUG 回归（非法 url 400）、src 参数、
-// 转换日志、sources/templates CRUD、convert preview/run、logs retry、
+// 转换日志、rule-sets CRUD、convert preview/run、logs retry、
 // auth 中间件、正则错误 400 映射。
 package api
 
@@ -66,21 +66,21 @@ func createSourceViaAPI(t *testing.T, h http.Handler, name, rawURL string) map[s
 	return resp.Source
 }
 
-// createTemplateViaAPI 通过管理台 API 创建规则模板，返回 JSON 里的 template 对象。
-func createTemplateViaAPI(t *testing.T, h http.Handler, name, rawURL, behavior, format string) map[string]any {
+// createRuleSetViaAPI 通过管理台 API 创建规则集，返回 JSON 里的 rule_set 对象。
+func createRuleSetViaAPI(t *testing.T, h http.Handler, name, rawURL, behavior, format string) map[string]any {
 	t.Helper()
 	payload := fmt.Sprintf(`{"name":%q,"url":%q,"behavior":%q,"format":%q,"enabled":true}`, name, rawURL, behavior, format)
-	rec := doJSON(h, http.MethodPost, "/api/v1/templates", payload, nil)
+	rec := doJSON(h, http.MethodPost, "/api/v1/rule-sets", payload, nil)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("create template status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("create rule set status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Template map[string]any `json:"template"`
+		RuleSet map[string]any `json:"rule_set"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || resp.Template == nil {
-		t.Fatalf("create template body = %q, want template object", rec.Body.String())
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || resp.RuleSet == nil {
+		t.Fatalf("create rule set body = %q, want rule_set object", rec.Body.String())
 	}
-	return resp.Template
+	return resp.RuleSet
 }
 
 // TestSubInvalidURLReturns400 断言 BUG 修复：结构非法的 url 参数返回 400
@@ -324,8 +324,8 @@ func TestSourcesCRUD(t *testing.T) {
 	}
 }
 
-// TestTemplatesCRUD 覆盖 /api/v1/templates 全端点。
-func TestTemplatesCRUD(t *testing.T) {
+// TestRuleSetsCRUD 覆盖 /api/v1/rule-sets 全端点。
+func TestRuleSetsCRUD(t *testing.T) {
 	h := newTestServer(t)
 
 	// 创建校验
@@ -335,52 +335,52 @@ func TestTemplatesCRUD(t *testing.T) {
 		`{"name":"t","url":"http://x.example.com/rules.yaml","behavior":"weird","format":"yaml"}`,
 		`{"name":"t","url":"http://x.example.com/rules.yaml","behavior":"domain","format":"xml"}`,
 	} {
-		if rec := doJSON(h, http.MethodPost, "/api/v1/templates", body, nil); rec.Code != http.StatusBadRequest {
+		if rec := doJSON(h, http.MethodPost, "/api/v1/rule-sets", body, nil); rec.Code != http.StatusBadRequest {
 			t.Errorf("create %s: status = %d, want 400", body, rec.Code)
 		}
 	}
 
-	tpl := createTemplateViaAPI(t, h, "广告拦截", "http://x.example.com/rules.yaml?token=SECRET", "domain", "yaml")
+	tpl := createRuleSetViaAPI(t, h, "广告拦截", "http://x.example.com/rules.yaml?token=SECRET", "domain", "yaml")
 	id, _ := tpl["id"].(string)
 	if id == "" {
-		t.Fatal("created template missing id")
+		t.Fatal("created rule set missing id")
 	}
 	if u, _ := tpl["url"].(string); strings.Contains(u, "SECRET") || !strings.Contains(u, "token=xxxxx") {
-		t.Errorf("template url not redacted: %q", tpl["url"])
+		t.Errorf("rule set url not redacted: %q", tpl["url"])
 	}
 
 	// 部分更新
-	rec := doJSON(h, http.MethodPut, "/api/v1/templates/"+id, `{"enabled":true,"format":"text"}`, nil)
+	rec := doJSON(h, http.MethodPut, "/api/v1/rule-sets/"+id, `{"enabled":true,"format":"text"}`, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	var upd struct {
-		Template map[string]any `json:"template"`
+		RuleSet map[string]any `json:"rule_set"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &upd); err != nil {
 		t.Fatalf("update body not json: %v", err)
 	}
-	if upd.Template["enabled"] != true || upd.Template["format"] != "text" {
-		t.Errorf("update result = %v, want enabled=true format=text", upd.Template)
+	if upd.RuleSet["enabled"] != true || upd.RuleSet["format"] != "text" {
+		t.Errorf("update result = %v, want enabled=true format=text", upd.RuleSet)
 	}
-	if rec := doJSON(h, http.MethodPut, "/api/v1/templates/"+id, `{"behavior":"bad"}`, nil); rec.Code != http.StatusBadRequest {
+	if rec := doJSON(h, http.MethodPut, "/api/v1/rule-sets/"+id, `{"behavior":"bad"}`, nil); rec.Code != http.StatusBadRequest {
 		t.Errorf("update bad behavior: status = %d, want 400", rec.Code)
 	}
-	if rec := doJSON(h, http.MethodPut, "/api/v1/templates/deadbeef0000", `{"name":"x"}`, nil); rec.Code != http.StatusNotFound {
+	if rec := doJSON(h, http.MethodPut, "/api/v1/rule-sets/deadbeef0000", `{"name":"x"}`, nil); rec.Code != http.StatusNotFound {
 		t.Errorf("update missing: status = %d, want 404", rec.Code)
 	}
 
 	// 列表
-	rec = doJSON(h, http.MethodGet, "/api/v1/templates", "", nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"templates"`) {
+	rec = doJSON(h, http.MethodGet, "/api/v1/rule-sets", "", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"rule_sets"`) {
 		t.Errorf("list status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 
 	// 删除
-	if rec := doJSON(h, http.MethodDelete, "/api/v1/templates/"+id, "", nil); rec.Code != http.StatusNoContent {
+	if rec := doJSON(h, http.MethodDelete, "/api/v1/rule-sets/"+id, "", nil); rec.Code != http.StatusNoContent {
 		t.Errorf("delete status = %d, want 204", rec.Code)
 	}
-	if rec := doJSON(h, http.MethodDelete, "/api/v1/templates/"+id, "", nil); rec.Code != http.StatusNotFound {
+	if rec := doJSON(h, http.MethodDelete, "/api/v1/rule-sets/"+id, "", nil); rec.Code != http.StatusNotFound {
 		t.Errorf("delete missing: status = %d, want 404", rec.Code)
 	}
 }
@@ -462,7 +462,7 @@ func TestConvertValidation(t *testing.T) {
 	}
 }
 
-// TestConvertRun 断言 run 端点返回完整 YAML，且 template_id 注入 rule-providers。
+// TestConvertRun 断言 run 端点返回完整 YAML，且 ruleset_id 注入 rule-providers。
 func TestConvertRun(t *testing.T) {
 	h := newTestServer(t)
 	src := fakeSource(t, http.StatusOK, subBody())
@@ -487,26 +487,26 @@ func TestConvertRun(t *testing.T) {
 		t.Fatalf("yaml field is not valid yaml: %v", err)
 	}
 
-	// template_id 注入
-	tpl := createTemplateViaAPI(t, h, "广告拦截", "http://x.example.com/rules.yaml", "domain", "yaml")
-	rec = doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q,"template_id":%q}`, src.URL, tpl["id"]), nil)
+	// ruleset_id 注入
+	tpl := createRuleSetViaAPI(t, h, "广告拦截", "http://x.example.com/rules.yaml", "domain", "yaml")
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q,"ruleset_id":%q}`, src.URL, tpl["id"]), nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("run with template status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("run with rule set status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "rule-providers") || !strings.Contains(body, "RULE-SET,") {
-		t.Errorf("run with template missing rule-providers injection")
+		t.Errorf("run with rule set missing rule-providers injection")
 	}
 
-	// 模板不存在 / 禁用 → 400
-	if rec := doJSON(h, http.MethodPost, "/api/v1/convert/run", `{"url":"`+src.URL+`","template_id":"deadbeef0000"}`, nil); rec.Code != http.StatusBadRequest {
-		t.Errorf("missing template: status = %d, want 400", rec.Code)
+	// 规则集不存在 / 禁用 → 400
+	if rec := doJSON(h, http.MethodPost, "/api/v1/convert/run", `{"url":"`+src.URL+`","ruleset_id":"deadbeef0000"}`, nil); rec.Code != http.StatusBadRequest {
+		t.Errorf("missing rule set: status = %d, want 400", rec.Code)
 	}
-	if rec := doJSON(h, http.MethodPut, "/api/v1/templates/"+tpl["id"].(string), `{"enabled":false}`, nil); rec.Code != http.StatusOK {
-		t.Fatalf("disable template: status = %d", rec.Code)
+	if rec := doJSON(h, http.MethodPut, "/api/v1/rule-sets/"+tpl["id"].(string), `{"enabled":false}`, nil); rec.Code != http.StatusOK {
+		t.Fatalf("disable rule set: status = %d", rec.Code)
 	}
-	if rec := doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q,"template_id":%q}`, src.URL, tpl["id"]), nil); rec.Code != http.StatusBadRequest {
-		t.Errorf("disabled template: status = %d, want 400", rec.Code)
+	if rec := doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q,"ruleset_id":%q}`, src.URL, tpl["id"]), nil); rec.Code != http.StatusBadRequest {
+		t.Errorf("disabled rule set: status = %d, want 400", rec.Code)
 	}
 }
 
@@ -803,37 +803,37 @@ func TestLogRetryRecomputesURLRedacted(t *testing.T) {
 	}
 }
 
-// TestTemplateNameTraversalRejected（P2-5）模板 Name 路径穿越在 API 层被拒：
+// TestRuleSetNameTraversalRejected（P2-5）规则集 Name 路径穿越在 API 层被拒：
 // 创建/更新返回 400，列表不出现穿越名。
-func TestTemplateNameTraversalRejected(t *testing.T) {
+func TestRuleSetNameTraversalRejected(t *testing.T) {
 	h := newTestServer(t)
 	for _, name := range []string{"../evil", "a/b", `a\b`, "..", "x/../y"} {
 		body := fmt.Sprintf(`{"name":%q,"url":"http://x.example.com/rules.yaml","behavior":"domain","format":"yaml"}`, name)
-		rec := doJSON(h, http.MethodPost, "/api/v1/templates", body, nil)
+		rec := doJSON(h, http.MethodPost, "/api/v1/rule-sets", body, nil)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("create name=%q: status = %d, want 400; body=%s", name, rec.Code, rec.Body.String())
 		}
 	}
-	tpl := createTemplateViaAPI(t, h, "正常模板", "http://x.example.com/rules.yaml", "domain", "yaml")
-	rec := doJSON(h, http.MethodPut, "/api/v1/templates/"+tpl["id"].(string), `{"name":"../evil"}`, nil)
+	tpl := createRuleSetViaAPI(t, h, "正常规则集", "http://x.example.com/rules.yaml", "domain", "yaml")
+	rec := doJSON(h, http.MethodPut, "/api/v1/rule-sets/"+tpl["id"].(string), `{"name":"../evil"}`, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("update traversal name: status = %d, want 400", rec.Code)
 	}
 	// 列表不出现穿越名
-	rec = doJSON(h, http.MethodGet, "/api/v1/templates", "", nil)
+	rec = doJSON(h, http.MethodGet, "/api/v1/rule-sets", "", nil)
 	if strings.Contains(rec.Body.String(), "evil") {
-		t.Errorf("templates list contains traversal name: %s", rec.Body.String())
+		t.Errorf("rule_sets list contains traversal name: %s", rec.Body.String())
 	}
 }
 
-// TestTemplateNameSpecialCharsRejected（P2-1）：模板名含逗号/换行/回车/控制字符
+// TestRuleSetNameSpecialCharsRejected（P2-1）：规则集名含逗号/换行/回车/控制字符
 // → 创建/更新 400（这些字符会拆碎 RULE-SET 规则行或破坏 YAML 行结构，mihomo
 // 语义层拒绝而语法层 output.Validate 放行）。
-func TestTemplateNameSpecialCharsRejected(t *testing.T) {
+func TestRuleSetNameSpecialCharsRejected(t *testing.T) {
 	h := newTestServer(t)
 	for _, name := range []string{"Netflix,cn", "a\nb", "a\rb", "a\tb"} {
 		body := fmt.Sprintf(`{"name":%q,"url":"http://x.example.com/rules.yaml","behavior":"domain","format":"yaml"}`, name)
-		rec := doJSON(h, http.MethodPost, "/api/v1/templates", body, nil)
+		rec := doJSON(h, http.MethodPost, "/api/v1/rule-sets", body, nil)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("create name=%q: status = %d, want 400; body=%s", name, rec.Code, rec.Body.String())
 			continue
@@ -842,8 +842,8 @@ func TestTemplateNameSpecialCharsRejected(t *testing.T) {
 			t.Errorf("create name=%q: err = %q, want 含 不能包含逗号/换行", name, msg)
 		}
 	}
-	tpl := createTemplateViaAPI(t, h, "正常模板", "http://x.example.com/rules.yaml", "domain", "yaml")
-	rec := doJSON(h, http.MethodPut, "/api/v1/templates/"+tpl["id"].(string), `{"name":"a,b"}`, nil)
+	tpl := createRuleSetViaAPI(t, h, "正常规则集", "http://x.example.com/rules.yaml", "domain", "yaml")
+	rec := doJSON(h, http.MethodPut, "/api/v1/rule-sets/"+tpl["id"].(string), `{"name":"a,b"}`, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("update comma name: status = %d, want 400", rec.Code)
 	}
@@ -884,8 +884,8 @@ func TestStoreIOErrorMapsTo500(t *testing.T) {
 func TestSubParamErrorsLogged(t *testing.T) {
 	h, st := newTestServerWithStore(t)
 	src := fakeSource(t, http.StatusOK, subBody())
-	// P2-3：参数错误日志同样记录 template_id（与成功路径一致）
-	do(h, "/sub?target=surge&url="+url.QueryEscape(src.URL)+"&template_id=xyz123") // target 错 + template_id
+	// P2-3：参数错误日志同样记录 ruleset_id（与成功路径一致）
+	do(h, "/sub?target=surge&url="+url.QueryEscape(src.URL)+"&ruleset_id=xyz123") // target 错 + ruleset_id
 	do(h, "/sub")                                                                  // 缺 url
 	do(h, "/sub?target=surge&url="+url.QueryEscape(src.URL))                       // target 错
 	do(h, "/sub?target=clash&src=deadbeef0000")                                    // src 不可用
@@ -918,9 +918,9 @@ func TestSubParamErrorsLogged(t *testing.T) {
 	if logs[3].URLRedacted != "" {
 		t.Errorf("logs[3].URLRedacted = %q, want 空（无 url 参数）", logs[3].URLRedacted)
 	}
-	// logs[4] = 最早请求（target 错 + template_id）：Params 必须带 template_id
-	if tid, _ := logs[4].Params["template_id"].(string); tid != "xyz123" {
-		t.Errorf("logs[4].Params[template_id] = %q, want xyz123", tid)
+	// logs[4] = 最早请求（target 错 + ruleset_id）：Params 必须带 ruleset_id
+	if rid, _ := logs[4].Params["ruleset_id"].(string); rid != "xyz123" {
+		t.Errorf("logs[4].Params[ruleset_id] = %q, want xyz123", rid)
 	}
 }
 

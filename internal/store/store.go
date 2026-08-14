@@ -1,6 +1,6 @@
 // Package store 提供 Web 管理台的 JSON 持久化数据层。
 //
-// 三组数据（订阅源 sources、转换日志 logs、规则模板 templates）各自独立落盘
+// 三组数据（订阅源 sources、转换日志 logs、规则集 ruleSets）各自独立落盘
 // 为 <name>.json（格式 {"version":1,"<name>":[...]}），共用一把读写锁：
 // 读操作持 RLock，写操作持 Lock 并覆盖「内存更新 + 落盘」全过程，保证并发
 // 安全与崩溃一致性。落盘采用原子写：同目录临时文件写入 + fsync + rename，
@@ -23,11 +23,11 @@ const dataVersion = 1
 
 // Store 是数据层核心，持有数据目录与三组内存态。
 type Store struct {
-	dataDir   string
-	mu        sync.RWMutex
-	sources   []Source
-	logs      []LogEntry
-	templates []RuleTemplate
+	dataDir  string
+	mu       sync.RWMutex
+	sources  []Source
+	logs     []LogEntry
+	ruleSets []RuleSet
 }
 
 // New 创建 Store：MkdirAll 数据目录后依次读回三份持久化文件。
@@ -45,7 +45,7 @@ func New(dir string) (*Store, error) {
 	if err := s.loadLogs(); err != nil {
 		return nil, err
 	}
-	if err := s.loadTemplates(); err != nil {
+	if err := s.loadRuleSets(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -119,7 +119,7 @@ func (s *Store) writeFile(name string, v any) error {
 	return nil
 }
 
-// sourcesFile / logsFile / templatesFile 是磁盘文件格式（version 字段预留）。
+// sourcesFile / logsFile / ruleSetsFile 是磁盘文件格式（version 字段预留）。
 type sourcesFile struct {
 	Version int      `json:"version"`
 	Sources []Source `json:"sources"`
@@ -130,9 +130,17 @@ type logsFile struct {
 	Logs    []LogEntry `json:"logs"`
 }
 
-type templatesFile struct {
-	Version   int            `json:"version"`
-	Templates []RuleTemplate `json:"templates"`
+type ruleSetsFile struct {
+	Version  int       `json:"version"`
+	RuleSets []RuleSet `json:"rulesets"`
+}
+
+// legacyTemplatesFile 兼容旧版 templates.json 结构（{"version":1,"templates":[...]}，
+// 旧字段名为 []RuleTemplate，JSON 字段名与现 RuleSet 完全一致）。
+// 仅用于读取迁移（R5 改名 规则模板→规则集），不参与写盘；旧文件保留不动。
+type legacyTemplatesFile struct {
+	Version   int      `json:"version"`
+	Templates []RuleSet `json:"templates"`
 }
 
 func (s *Store) loadSources() error {
@@ -169,22 +177,40 @@ func (s *Store) loadLogs() error {
 	return nil
 }
 
-func (s *Store) loadTemplates() error {
-	var f templatesFile
-	existed, err := s.loadJSON("templates.json", &f)
+// loadRuleSets 读取规则集：rulesets.json 存在（含空列表）→ 直接采用；
+// 不存在但旧版 templates.json 存在 → 解析旧结构作为内存态（迁移提示 log
+// info，不主动改写文件——旧文件保留，首次写操作自然落盘为 rulesets.json）；
+// 两者都不存在 → 首次启动种入预置规则集。损坏恢复（.bak 后空态）与
+// version 不匹配空态同样不触发种入——预置删光后不复活。
+func (s *Store) loadRuleSets() error {
+	var f ruleSetsFile
+	existed, err := s.loadJSON("rulesets.json", &f)
 	if err != nil {
 		return err
 	}
 	if !existed {
-		// 首次启动：templates.json 不存在 → 种入 8 个预置模板并落盘。
-		// 文件已存在（含空列表）绝不种入；损坏恢复（.bak 后空态）与
-		// version 不匹配空态同样不触发——预置删光后不复活。
-		return s.seedPresetTemplates()
+		// rulesets.json 不存在：先看旧版 templates.json 能否迁移
+		var legacy legacyTemplatesFile
+		lexisted, err := s.loadJSON("templates.json", &legacy)
+		if err != nil {
+			return err
+		}
+		if lexisted {
+			if legacy.Version != dataVersion {
+				slog.Warn("store: templates.json 版本不匹配，按空态继续", "version", legacy.Version)
+				return nil
+			}
+			s.ruleSets = legacy.Templates
+			slog.Info("store: 从旧 templates.json 迁移规则集数据（旧文件保留，首次写操作落盘为 rulesets.json）")
+			return nil
+		}
+		// 两者都不存在 → 首次启动，种入预置规则集并落盘
+		return s.seedPresetRuleSets()
 	}
 	if f.Version != dataVersion {
-		slog.Warn("store: templates.json 版本不匹配，按空态继续", "version", f.Version)
+		slog.Warn("store: rulesets.json 版本不匹配，按空态继续", "version", f.Version)
 		return nil
 	}
-	s.templates = f.Templates
+	s.ruleSets = f.RuleSets
 	return nil
 }

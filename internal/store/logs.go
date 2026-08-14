@@ -30,7 +30,7 @@ type LogEntry struct {
 // 条目，随后落盘。
 //
 // 内存与磁盘一致性：先构造「旧日志 + 新条目」的新切片（含淘汰逻辑），落盘
-// 成功后才替换 s.logs；落盘失败返回 err 且内存态不变（与 sources/templates
+// 成功后才替换 s.logs；落盘失败返回 err 且内存态不变（与 sources/rule-sets
 // 的「落盘失败回滚」语义一致）。
 func (s *Store) AppendLog(e LogEntry) (LogEntry, error) {
 	if e.ID == "" {

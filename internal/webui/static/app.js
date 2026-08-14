@@ -4,9 +4,9 @@
 const $ = (sel) => document.querySelector(sel);
 const TOKEN_KEY = 'osc_token';
 const state = {
-  editingSourceId: null, editingTemplateId: null, tplBehavior: null, tplFormat: null,
-  srcOptions: [], tplOptions: [],            // 已加载的启用选项（卡片渲染数据源）
-  selectedSources: new Set(), selectedTpls: new Set(), // 选中 ID 集合
+  editingSourceId: null, editingRuleSetId: null, rsBehavior: null, rsFormat: null,
+  srcOptions: [], ruleSetOptions: [],      // 已加载的启用选项（卡片渲染数据源）
+  selectedSources: new Set(), selectedRuleSets: new Set(), // 选中 ID 集合
 };
 
 /* ---------------- 通用工具 ---------------- */
@@ -164,7 +164,7 @@ function switchTab(name) {
   if (name === 'sources') loadSources();
   if (name === 'convert') loadConvertOptions();
   if (name === 'logs') loadLogs();
-  if (name === 'templates') loadTemplates();
+  if (name === 'rule-sets') loadRuleSets();
   if (name === 'auth') syncAuthForm();
 }
 $('#tabs').addEventListener('click', (e) => {
@@ -295,7 +295,7 @@ $('#sourceRows').addEventListener('change', async (e) => {
 
 /* ---------------- 订阅转换 ---------------- */
 
-// hostOfURL 提取 URL host 作为卡片 meta（Source 结构无节点数字段，不造假）
+// hostOfURL 提取 URL host 作为选项行 meta（Source 结构无节点数字段，不造假）
 function hostOfURL(u) {
   try { return new URL(u).host; } catch (e) { return ''; }
 }
@@ -306,24 +306,24 @@ function pruneSelection(sel, validIds) {
   for (const id of [...sel]) if (!valid.has(id)) sel.delete(id);
 }
 
-// R4 统一卡片选择器（数据源 + 模板同组件，变体A 玻璃拟态）：
-// 渲染卡片网格 → 点击 toggle 选中（.on 高亮 + ✓ 角标）→ 摘要条实时刷新
+// R5 长条多选下拉（数据源 + 规则集同组件）：触发器展开面板 → 选项行 toggle
+// 选中（.on + ✓）→ 摘要区 chips 实时刷新；面板多选不自动关闭
 async function loadConvertOptions() {
   try {
     const [sd, td] = await Promise.all([
-      apiJSON('/api/v1/sources'), apiJSON('/api/v1/templates'),
+      apiJSON('/api/v1/sources'), apiJSON('/api/v1/rule-sets'),
     ]);
     state.srcOptions = (sd.sources || []).filter((s) => s.enabled);
-    state.tplOptions = (td.templates || []).filter((t) => t.enabled);
+    state.ruleSetOptions = (td.rule_sets || []).filter((t) => t.enabled);
     pruneSelection(state.selectedSources, state.srcOptions.map((s) => s.id));
-    pruneSelection(state.selectedTpls, state.tplOptions.map((t) => t.id));
+    pruneSelection(state.selectedRuleSets, state.ruleSetOptions.map((t) => t.id));
     renderSrcGrid();
-    renderTplGrid();
+    renderRuleSetGrid();
   } catch (e) {
-    // P2：失败时网格不能永久卡占位——给出可感知的失败提示（鉴权失败仍由顶部 badge 提示）
+    // P2：失败时下拉不能永久卡占位——给出可感知的失败提示（鉴权失败仍由顶部 badge 提示）
     $('#convSrcGrid').innerHTML = '<span class="hint">加载失败，请刷新重试</span>';
-    $('#convTplGrid').innerHTML = '<span class="hint">加载失败，请刷新重试</span>';
-    toast('数据源/模板加载失败：' + (e && e.message ? e.message : String(e)), true);
+    $('#convRsGrid').innerHTML = '<span class="hint">加载失败，请刷新重试</span>';
+    toast('数据源/规则集加载失败：' + (e && e.message ? e.message : String(e)), true);
   }
 }
 
@@ -332,27 +332,27 @@ function renderSrcGrid() {
   const list = state.srcOptions;
   grid.innerHTML = list.length
     ? list.map((s) => `
-      <div class="pick${state.selectedSources.has(s.id) ? ' on' : ''}" data-id="${esc(s.id)}" role="button" tabindex="0" title="${esc(s.name)}">
-        <span class="pick-check">✓</span>
-        <span class="pick-name">${esc(s.name)}</span>
-        <span class="pick-meta">${esc(hostOfURL(s.url) || '—')}</span>
+      <div class="ms-option${state.selectedSources.has(s.id) ? ' on' : ''}" data-id="${esc(s.id)}" role="option" aria-selected="${state.selectedSources.has(s.id)}" tabindex="0" title="${esc(s.name)}">
+        <span class="ms-opt-check">✓</span>
+        <span class="ms-opt-name">${esc(s.name)}</span>
+        <span class="ms-opt-meta">${esc(hostOfURL(s.url) || '—')}</span>
       </div>`).join('')
     : '<span class="hint">（暂无启用的订阅源）</span>';
   updateSrcSummary();
 }
 
-function renderTplGrid() {
-  const grid = $('#convTplGrid');
-  const list = state.tplOptions;
+function renderRuleSetGrid() {
+  const grid = $('#convRsGrid');
+  const list = state.ruleSetOptions;
   grid.innerHTML = list.length
     ? list.map((t) => `
-      <div class="pick${state.selectedTpls.has(t.id) ? ' on' : ''}" data-id="${esc(t.id)}" role="button" tabindex="0" title="${esc(t.name)}">
-        <span class="pick-check">✓</span>
-        <span class="pick-name">${esc(t.name)}</span>
-        <span class="pick-meta">${esc(t.format || '')}${t.url ? ' · ' + esc(hostOfURL(t.url)) : ''}</span>
+      <div class="ms-option${state.selectedRuleSets.has(t.id) ? ' on' : ''}" data-id="${esc(t.id)}" role="option" aria-selected="${state.selectedRuleSets.has(t.id)}" tabindex="0" title="${esc(t.name)}">
+        <span class="ms-opt-check">✓</span>
+        <span class="ms-opt-name">${esc(t.name)}</span>
+        <span class="ms-opt-meta">${esc(t.format || '')}${t.url ? ' · ' + esc(hostOfURL(t.url)) : ''}</span>
       </div>`).join('')
-    : '<span class="hint">（无启用的模板）</span>';
-  updateTplSummary();
+    : '<span class="hint">（无启用的规则集）</span>';
+  updateRuleSetSummary();
 }
 
 // 摘要条：已选 N 项 + 可单独移除的 chips
@@ -363,46 +363,99 @@ function updateSrcSummary() {
     : '未选择';
 }
 
-function updateTplSummary() {
-  const sel = state.tplOptions.filter((t) => state.selectedTpls.has(t.id));
-  $('#convTplSummary').innerHTML = sel.length
-    ? `已选 ${sel.length} 项 ` + sel.map((t) => `<span class="chip">${esc(t.name)}<span class="chip-x" data-kind="tpl" data-id="${esc(t.id)}">×</span></span>`).join('')
+function updateRuleSetSummary() {
+  const sel = state.ruleSetOptions.filter((t) => state.selectedRuleSets.has(t.id));
+  $('#convRsSummary').innerHTML = sel.length
+    ? `已选 ${sel.length} 项 ` + sel.map((t) => `<span class="chip">${esc(t.name)}<span class="chip-x" data-kind="rs" data-id="${esc(t.id)}">×</span></span>`).join('')
     : '未选择';
 }
 
-// 卡片点击 toggle（事件委托）；chips 的 × 单独移除
+// 长条多选下拉组件：触发器展开/收起（chips 的 × 只移除不切换）、Esc 关闭
+function setupMultiSelect(rootId) {
+  const root = document.getElementById(rootId);
+  const trigger = root.querySelector('.ms-trigger');
+  const panel = root.querySelector('.ms-panel');
+  const setOpen = (open) => {
+    root.classList.toggle('open', open);
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  trigger.addEventListener('click', (e) => {
+    // chips 的 × 被点击时内层 handler 已重建摘要（e.target 脱离文档树），closest 会失效；
+    // 改用 composedPath 判定，避免误切换面板（面板开着会误关、关着会误开）
+    const path = e.composedPath ? e.composedPath() : [e.target];
+    if (path.some((n) => n.classList && n.classList.contains('chip-x'))) return;
+    setOpen(!root.classList.contains('open'));
+  });
+  trigger.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!root.classList.contains('open')); }
+    else if (e.key === 'Escape') setOpen(false);
+  });
+  panel.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { setOpen(false); trigger.focus(); }
+  });
+  return { root, trigger, setOpen };
+}
+const srcMs = setupMultiSelect('srcMulti');
+const rsMs = setupMultiSelect('rsMulti');
+
+// 点击外部关闭所有面板；点击组件内部时面板互斥（打开 src 面板关闭 rs，反之亦然）。
+// 注意：选项/chips 点击会重建内层 DOM，e.target 可能已脱离文档树使 closest 失效，改用 composedPath
+document.addEventListener('click', (e) => {
+  const path = e.composedPath ? e.composedPath() : [];
+  const inSrc = path.includes(srcMs.root);
+  const inRs = path.includes(rsMs.root);
+  if (!inSrc && !inRs) { srcMs.setOpen(false); rsMs.setOpen(false); return; }
+  if (inSrc) rsMs.setOpen(false);
+  if (inRs) srcMs.setOpen(false);
+});
+
+function toggleSrc(id) {
+  if (state.selectedSources.has(id)) state.selectedSources.delete(id); else state.selectedSources.add(id);
+  renderSrcGrid();
+}
+function toggleRuleSet(id) {
+  if (state.selectedRuleSets.has(id)) state.selectedRuleSets.delete(id); else state.selectedRuleSets.add(id);
+  renderRuleSetGrid();
+}
+
+// focusOpt 重建 innerHTML 后恢复焦点：优先同 id 选项行，行被移除时回退触发器
+function focusOpt(ms, gridId, id) {
+  const grid = document.getElementById(gridId);
+  const el = [...grid.querySelectorAll('.ms-option')].find((n) => n.dataset.id === id);
+  (el || ms.trigger).focus();
+}
+
+// 选项行点击 toggle（事件委托）；chips 的 × 单独移除；面板保持打开支持连续多选
 $('#convSrcGrid').addEventListener('click', (e) => {
-  const card = e.target.closest('.pick');
-  if (!card) return;
-  const id = card.dataset.id;
-  if (state.selectedSources.has(id)) state.selectedSources.delete(id); else state.selectedSources.add(id);
-  renderSrcGrid();
+  const opt = e.target.closest('.ms-option');
+  if (!opt) return;
+  toggleSrc(opt.dataset.id);
 });
-// 键盘可达性（P2）：卡片 role=button + tabindex=0，Enter/Space 触发与 click 相同的 toggle
+// 键盘可达性：选项行 Enter/Space 触发与 click 相同的 toggle，Esc 关闭面板
 $('#convSrcGrid').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { srcMs.setOpen(false); srcMs.trigger.focus(); return; }
   if (e.key !== 'Enter' && e.key !== ' ') return;
-  const card = e.target.closest('.pick');
-  if (!card) return;
+  const opt = e.target.closest('.ms-option');
+  if (!opt) return;
   e.preventDefault(); // 阻止 Space 滚动页面
-  const id = card.dataset.id;
-  if (state.selectedSources.has(id)) state.selectedSources.delete(id); else state.selectedSources.add(id);
-  renderSrcGrid();
+  const id = opt.dataset.id;
+  toggleSrc(id);
+  focusOpt(srcMs, 'convSrcGrid', id);
 });
-$('#convTplGrid').addEventListener('click', (e) => {
-  const card = e.target.closest('.pick');
-  if (!card) return;
-  const id = card.dataset.id;
-  if (state.selectedTpls.has(id)) state.selectedTpls.delete(id); else state.selectedTpls.add(id);
-  renderTplGrid();
+$('#convRsGrid').addEventListener('click', (e) => {
+  const opt = e.target.closest('.ms-option');
+  if (!opt) return;
+  toggleRuleSet(opt.dataset.id);
 });
-$('#convTplGrid').addEventListener('keydown', (e) => {
+$('#convRsGrid').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { rsMs.setOpen(false); rsMs.trigger.focus(); return; }
   if (e.key !== 'Enter' && e.key !== ' ') return;
-  const card = e.target.closest('.pick');
-  if (!card) return;
+  const opt = e.target.closest('.ms-option');
+  if (!opt) return;
   e.preventDefault();
-  const id = card.dataset.id;
-  if (state.selectedTpls.has(id)) state.selectedTpls.delete(id); else state.selectedTpls.add(id);
-  renderTplGrid();
+  const id = opt.dataset.id;
+  toggleRuleSet(id);
+  focusOpt(rsMs, 'convRsGrid', id);
 });
 $('#convSrcSummary').addEventListener('click', (e) => {
   const x = e.target.closest('.chip-x');
@@ -410,16 +463,16 @@ $('#convSrcSummary').addEventListener('click', (e) => {
   state.selectedSources.delete(x.dataset.id);
   renderSrcGrid();
 });
-$('#convTplSummary').addEventListener('click', (e) => {
+$('#convRsSummary').addEventListener('click', (e) => {
   const x = e.target.closest('.chip-x');
   if (!x) return;
-  state.selectedTpls.delete(x.dataset.id);
-  renderTplGrid();
+  state.selectedRuleSets.delete(x.dataset.id);
+  renderRuleSetGrid();
 });
 $('#btnSrcAll').onclick = () => { state.srcOptions.forEach((s) => state.selectedSources.add(s.id)); renderSrcGrid(); };
 $('#btnSrcClear').onclick = () => { state.selectedSources.clear(); renderSrcGrid(); };
-$('#btnTplAll').onclick = () => { state.tplOptions.forEach((t) => state.selectedTpls.add(t.id)); renderTplGrid(); };
-$('#btnTplClear').onclick = () => { state.selectedTpls.clear(); renderTplGrid(); };
+$('#btnRsAll').onclick = () => { state.ruleSetOptions.forEach((t) => state.selectedRuleSets.add(t.id)); renderRuleSetGrid(); };
+$('#btnRsClear').onclick = () => { state.selectedRuleSets.clear(); renderRuleSetGrid(); };
 
 function convertBody() {
   const body = {
@@ -431,8 +484,8 @@ function convertBody() {
     scv: $('#convScv').checked,
     strip_emoji: $('#convStripEmoji').checked,
   };
-  const tpls = [...state.selectedTpls];
-  if (tpls.length) body.template_id = tpls.join(',');
+  const ruleSets = [...state.selectedRuleSets];
+  if (ruleSets.length) body.ruleset_id = ruleSets.join(',');
   const srcIds = [...state.selectedSources];
   const urlVal = $('#tempUrlWrap').open ? $('#convUrl').value.trim() : '';
   if (!srcIds.length && !urlVal) throw new Error('请选择数据源或填写临时 URL');
@@ -476,8 +529,8 @@ function genSubLink() {
   if ($('#convTls13').checked) q.set('tls13', 'true');
   if ($('#convScv').checked) q.set('scv', 'true');
   if ($('#convStripEmoji').checked) q.set('strip_emoji', 'true');
-  const tpls = [...state.selectedTpls];
-  if (tpls.length) q.set('template_id', tpls.join(','));
+  const ruleSets = [...state.selectedRuleSets];
+  if (ruleSets.length) q.set('ruleset_id', ruleSets.join(','));
   // window.location.host 已含端口（如 192.168.1.5:25500）；协议跟随当前页面
   // （http/https），避免硬编码 http:// 在反代 TLS 场景下生成错误链接
   return window.location.protocol + '//' + window.location.host + '/sub?' + q.toString();
@@ -541,7 +594,7 @@ function paramSummary(p) {
   ['udp', 'tls13', 'scv', 'strip_emoji'].forEach((k) => {
     if (p[k]) parts.push(`<span class="param-badge">${esc(k)}</span>`);
   });
-  if (p.template_id) parts.push(`<span class="param-badge">template</span>`);
+  if (p.ruleset_id) parts.push(`<span class="param-badge">规则集</span>`);
   return parts.length ? parts.join('') : '<span class="dim">—</span>';
 }
 
@@ -588,15 +641,15 @@ $('#logRows').addEventListener('click', async (e) => {
   }
 });
 
-/* ---------------- 规则模板 ---------------- */
+/* ---------------- 规则集管理 ---------------- */
 
-async function loadTemplates() {
-  const tbody = $('#templateRows');
+async function loadRuleSets() {
+  const tbody = $('#ruleSetRows');
   try {
-    const data = await apiJSON('/api/v1/templates');
-    const list = data.templates || [];
+    const data = await apiJSON('/api/v1/rule-sets');
+    const list = data.rule_sets || [];
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无规则模板，点击「新增模板」创建</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无规则集，点击「新增规则集」创建</td></tr>';
       return;
     }
     tbody.innerHTML = list.map((t) => `
@@ -605,7 +658,7 @@ async function loadTemplates() {
         <td class="url" title="${esc(t.url)}">${esc(t.url)}</td>
         <td>${esc(t.behavior)}</td>
         <td>${esc(t.format)}</td>
-        <td><input type="checkbox" data-id="${esc(t.id)}" class="tpl-toggle" ${t.enabled ? 'checked' : ''}></td>
+        <td><input type="checkbox" data-id="${esc(t.id)}" class="rs-toggle" ${t.enabled ? 'checked' : ''}></td>
         <td><div class="row-actions">
           <button class="btn small" data-act="edit" data-id="${esc(t.id)}">编辑</button>
           <button class="btn small danger" data-act="del" data-id="${esc(t.id)}">删除</button>
@@ -619,104 +672,104 @@ async function loadTemplates() {
 // hideProbeResult 隐藏探测预览区并清空内容：探测失败或用户修改 URL 后调用，
 // 防止把过期探测结果当成新结果保存。
 function hideProbeResult() {
-  $('#tplProbeBox').classList.add('hidden');
-  $('#tplProbeReason').textContent = '';
-  $('#tplProbePreview').textContent = '';
+  $('#rsProbeBox').classList.add('hidden');
+  $('#rsProbeReason').textContent = '';
+  $('#rsProbePreview').textContent = '';
 }
 
-function resetTemplateForm() {
-  state.editingTemplateId = null;
-  state.tplBehavior = null;
-  state.tplFormat = null;
-  $('#btnProbeTemplate').dataset.probedUrl = '';
-  $('#btnProbeTemplate').dataset.probedBehavior = '';
-  $('#btnProbeTemplate').dataset.probedFormat = '';
-  $('#templateFormTitle').textContent = '新增模板';
-  $('#tplName').value = '';
-  $('#tplUrl').value = '';
-  $('#tplUrl').placeholder = 'https://example.com/rules.yaml';
-  $('#tplBehavior').value = 'domain';
-  $('#tplFormat').value = 'yaml';
-  $('#tplEnabled').checked = true;
+function resetRuleSetForm() {
+  state.editingRuleSetId = null;
+  state.rsBehavior = null;
+  state.rsFormat = null;
+  $('#btnProbeRuleSet').dataset.probedUrl = '';
+  $('#btnProbeRuleSet').dataset.probedBehavior = '';
+  $('#btnProbeRuleSet').dataset.probedFormat = '';
+  $('#ruleSetFormTitle').textContent = '新增规则集';
+  $('#rsName').value = '';
+  $('#rsUrl').value = '';
+  $('#rsUrl').placeholder = 'https://example.com/rules.yaml';
+  $('#rsBehavior').value = 'domain';
+  $('#rsFormat').value = 'yaml';
+  $('#rsEnabled').checked = true;
   hideProbeResult();
-  $('#templateForm').classList.add('hidden');
+  $('#ruleSetForm').classList.add('hidden');
 }
 
-$('#btnNewTemplate').onclick = () => {
-  resetTemplateForm();
-  $('#templateForm').classList.remove('hidden');
-  $('#tplName').focus();
+$('#btnNewRuleSet').onclick = () => {
+  resetRuleSetForm();
+  $('#ruleSetForm').classList.remove('hidden');
+  $('#rsName').focus();
 };
-$('#btnCancelTemplate').onclick = resetTemplateForm;
+$('#btnCancelRuleSet').onclick = resetRuleSetForm;
 
-$('#templateForm').addEventListener('submit', async (e) => {
+$('#ruleSetForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const url = $('#tplUrl').value.trim();
+  const url = $('#rsUrl').value.trim();
   // 统一判定：表单 URL 与探测时 URL 不一致（含 URL 留空=编辑保持原值、
   // URL 改成别的两种情况，URL 为空时探测 URL 非空所以必不一致）时，探测
   // 回填的 behavior/format 不再适用。仅当表单值仍是探测回填值（用户未手
-  // 改，stillProbed）才还原模板原值/清空；用户手改过则尊重其选择，不动。
+  // 改，stillProbed）才还原规则集原值/清空；用户手改过则尊重其选择，不动。
   let probeIgnored = false;
-  const probedUrl = $('#btnProbeTemplate').dataset.probedUrl;
+  const probedUrl = $('#btnProbeRuleSet').dataset.probedUrl;
   if (probedUrl && url !== probedUrl) {
-    const b = $('#tplBehavior').value, f = $('#tplFormat').value;
-    const stillProbed = (b === $('#btnProbeTemplate').dataset.probedBehavior &&
-                         f === $('#btnProbeTemplate').dataset.probedFormat);
+    const b = $('#rsBehavior').value, f = $('#rsFormat').value;
+    const stillProbed = (b === $('#btnProbeRuleSet').dataset.probedBehavior &&
+                         f === $('#btnProbeRuleSet').dataset.probedFormat);
     if (stillProbed) {
       probeIgnored = true;
-      if (state.editingTemplateId) {
-        // 编辑模式：恢复模板原值（state.tplBehavior/tplFormat 编辑加载时已存）
-        $('#tplBehavior').value = state.tplBehavior ?? '';
-        $('#tplFormat').value = state.tplFormat ?? '';
+      if (state.editingRuleSetId) {
+        // 编辑模式：恢复规则集原值（state.rsBehavior/rsFormat 编辑加载时已存）
+        $('#rsBehavior').value = state.rsBehavior ?? '';
+        $('#rsFormat').value = state.rsFormat ?? '';
       } else {
         // 新建模式：清空让用户重选
-        $('#tplBehavior').value = '';
-        $('#tplFormat').value = '';
+        $('#rsBehavior').value = '';
+        $('#rsFormat').value = '';
       }
     }
   }
   const body = {
-    name: $('#tplName').value.trim(),
-    behavior: $('#tplBehavior').value,
-    format: $('#tplFormat').value,
-    enabled: $('#tplEnabled').checked,
+    name: $('#rsName').value.trim(),
+    behavior: $('#rsBehavior').value,
+    format: $('#rsFormat').value,
+    enabled: $('#rsEnabled').checked,
   };
-  if (state.editingTemplateId) {
+  if (state.editingRuleSetId) {
     // 编辑模式 URL 留空 = PUT 不带 url（服务端保持原 URL）
     if (url) body.url = url;
     try {
-      await apiJSON('/api/v1/templates/' + state.editingTemplateId, {
+      await apiJSON('/api/v1/rule-sets/' + state.editingRuleSetId, {
         method: 'PUT', body: JSON.stringify(body),
       });
-      toast(probeIgnored ? '模板已更新（URL 与探测源不一致，已忽略探测结果）' : '模板已更新');
+      toast(probeIgnored ? '规则集已更新（URL 与探测源不一致，已忽略探测结果）' : '规则集已更新');
     } catch (err) { toast('更新失败：' + err.message, true); }
   } else {
     body.url = url;
     if (!body.url) { toast('请填写规则集 URL', true); return; }
     try {
-      await apiJSON('/api/v1/templates', { method: 'POST', body: JSON.stringify(body) });
-      toast(probeIgnored ? '模板已创建（URL 已变更，请重新探测或手动选择）' : '模板已创建');
+      await apiJSON('/api/v1/rule-sets', { method: 'POST', body: JSON.stringify(body) });
+      toast(probeIgnored ? '规则集已创建（URL 已变更，请重新探测或手动选择）' : '规则集已创建');
     } catch (err) { toast('创建失败：' + err.message, true); }
   }
-  resetTemplateForm();
-  loadTemplates();
+  resetRuleSetForm();
+  loadRuleSets();
 });
 
 // 自动探测：新建/编辑表单共用。探测结果只回填表单控件（不写 state），
-// 保存逻辑与 state.editingTemplateId 完全不变；format/behavior 非空才
+// 保存逻辑与 state.editingRuleSetId 完全不变；format/behavior 非空才
 // 回填下拉框（空串不动，避免清掉用户已选值），reason/preview 用
 // textContent 赋值（零 XSS）。探测成功把探测 URL 与回填的
 // behavior/format 记到按钮 dataset（probedUrl/probedBehavior/
 // probedFormat），供保存逻辑统一判定「表单 URL 与探测 URL 不一致时
 // 探测结果是否仍适用」（URL 留空或改 URL 均覆盖）。
-$('#btnProbeTemplate').onclick = async () => {
-  const url = $('#tplUrl').value.trim();
+$('#btnProbeRuleSet').onclick = async () => {
+  const url = $('#rsUrl').value.trim();
   if (!url) { toast('请先填写规则集 URL', true); return; }
-  const btn = $('#btnProbeTemplate');
+  const btn = $('#btnProbeRuleSet');
   btn.disabled = true;
   btn.textContent = '探测中…';
   try {
-    const data = await apiJSON('/api/v1/templates/probe', {
+    const data = await apiJSON('/api/v1/rule-sets/probe', {
       method: 'POST', body: JSON.stringify({ url }),
     });
     btn.dataset.probedUrl = url;
@@ -724,11 +777,11 @@ $('#btnProbeTemplate').onclick = async () => {
     // 回填值」判断用户是否手改过，决定是否还原/清空
     btn.dataset.probedBehavior = data.behavior || '';
     btn.dataset.probedFormat = data.format || '';
-    if (data.format) $('#tplFormat').value = data.format;
-    if (data.behavior) $('#tplBehavior').value = data.behavior;
-    $('#tplProbeReason').textContent = data.reason || '';
-    $('#tplProbePreview').textContent = (data.preview || []).join('\n');
-    $('#tplProbeBox').classList.remove('hidden');
+    if (data.format) $('#rsFormat').value = data.format;
+    if (data.behavior) $('#rsBehavior').value = data.behavior;
+    $('#rsProbeReason').textContent = data.reason || '';
+    $('#rsProbePreview').textContent = (data.preview || []).join('\n');
+    $('#rsProbeBox').classList.remove('hidden');
     toast('探测完成：' + (data.behavior || '未识别') + ' / ' + (data.format || '未识别'));
   } catch (err) {
     // 失败时隐藏预览区：残留的旧结果会误导用户当成新结果保存
@@ -741,9 +794,9 @@ $('#btnProbeTemplate').onclick = async () => {
 };
 
 // 用户修改 URL 后隐藏预览区：旧探测结果与新 URL 不匹配，防止误保存
-$('#tplUrl').addEventListener('input', hideProbeResult);
+$('#rsUrl').addEventListener('input', hideProbeResult);
 
-$('#templateRows').addEventListener('click', async (e) => {
+$('#ruleSetRows').addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const id = btn.dataset.id;
@@ -752,43 +805,43 @@ $('#templateRows').addEventListener('click', async (e) => {
     // input 事件，预览不会自动隐藏；probedUrl 残留会让保存误判
     // 「探测结果仍适用」。
     hideProbeResult();
-    $('#btnProbeTemplate').dataset.probedUrl = '';
-    $('#btnProbeTemplate').dataset.probedBehavior = '';
-    $('#btnProbeTemplate').dataset.probedFormat = '';
+    $('#btnProbeRuleSet').dataset.probedUrl = '';
+    $('#btnProbeRuleSet').dataset.probedBehavior = '';
+    $('#btnProbeRuleSet').dataset.probedFormat = '';
     try {
-      const data = await apiJSON('/api/v1/templates');
-      const tpl = (data.templates || []).find((t) => t.id === id);
-      if (!tpl) return;
-      state.editingTemplateId = id;
-      // 记录模板原 behavior/format：探测回填会覆盖表单值，URL 留空保存时
+      const data = await apiJSON('/api/v1/rule-sets');
+      const rs = (data.rule_sets || []).find((t) => t.id === id);
+      if (!rs) return;
+      state.editingRuleSetId = id;
+      // 记录规则集原 behavior/format：探测回填会覆盖表单值，URL 留空保存时
       // 需恢复原值（见 submit 处理），故在探测前存入 state
-      state.tplBehavior = tpl.behavior;
-      state.tplFormat = tpl.format;
-      $('#templateFormTitle').textContent = '编辑模板：' + tpl.name;
-      $('#tplName').value = tpl.name;
-      $('#tplUrl').value = '';
-      $('#tplUrl').placeholder = '留空保持不变（原 URL 已脱敏）';
-      $('#tplBehavior').value = tpl.behavior;
-      $('#tplFormat').value = tpl.format;
-      $('#tplEnabled').checked = tpl.enabled;
-      $('#templateForm').classList.remove('hidden');
-      $('#tplName').focus();
+      state.rsBehavior = rs.behavior;
+      state.rsFormat = rs.format;
+      $('#ruleSetFormTitle').textContent = '编辑规则集：' + rs.name;
+      $('#rsName').value = rs.name;
+      $('#rsUrl').value = '';
+      $('#rsUrl').placeholder = '留空保持不变（原 URL 已脱敏）';
+      $('#rsBehavior').value = rs.behavior;
+      $('#rsFormat').value = rs.format;
+      $('#rsEnabled').checked = rs.enabled;
+      $('#ruleSetForm').classList.remove('hidden');
+      $('#rsName').focus();
     } catch (err) { toast('获取失败：' + err.message, true); }
   } else if (btn.dataset.act === 'del') {
-    if (!confirm('确认删除该规则模板？')) return;
+    if (!confirm('确认删除该规则集？')) return;
     try {
-      await apiJSON('/api/v1/templates/' + id, { method: 'DELETE' });
+      await apiJSON('/api/v1/rule-sets/' + id, { method: 'DELETE' });
       toast('已删除');
-      loadTemplates();
+      loadRuleSets();
     } catch (err) { toast('删除失败：' + err.message, true); }
   }
 });
 
-$('#templateRows').addEventListener('change', async (e) => {
-  if (!e.target.classList.contains('tpl-toggle')) return;
+$('#ruleSetRows').addEventListener('change', async (e) => {
+  if (!e.target.classList.contains('rs-toggle')) return;
   const id = e.target.dataset.id;
   try {
-    await apiJSON('/api/v1/templates/' + id, {
+    await apiJSON('/api/v1/rule-sets/' + id, {
       method: 'PUT', body: JSON.stringify({ enabled: e.target.checked }),
     });
     toast(e.target.checked ? '已启用' : '已禁用');

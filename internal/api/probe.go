@@ -1,5 +1,5 @@
-// 规则模板自动探测：拉取规则集头部字节，纯函数分析 format/behavior，
-// 供管理台前端在新建/编辑模板时一键回填下拉框。探测结果不持久化。
+// 规则集自动探测：拉取规则集头部字节，纯函数分析 format/behavior，
+// 供管理台前端在新建/编辑规则集时一键回填下拉框。探测结果不持久化。
 package api
 
 import (
@@ -13,7 +13,7 @@ import (
 // probeMaxBytes 探测仅需规则集头部样本；512KB 足够判定且防响应膨胀。
 const probeMaxBytes = 512 << 10
 
-// probeReq / probeResp 是 POST /api/v1/templates/probe 的请求/响应结构。
+// probeReq / probeResp 是 POST /api/v1/rule-sets/probe 的请求/响应结构。
 type probeReq struct {
 	URL string `json:"url"`
 }
@@ -27,13 +27,13 @@ type probeResp struct {
 	Preview   []string `json:"preview"`
 }
 
-// handleProbeTemplate 自动探测规则集 URL 的 format/behavior：
+// handleProbeRuleSet 自动探测规则集 URL 的 format/behavior：
 // FetchHead 拉取头部（不写缓存）→ analyzeRuleHead 纯函数判定 → 200 返回
 // 探测结果与预览。
 //
 // 错误映射：URL 为空/结构非法 → 400；拉取失败 → 502（错误消息沿用现有
 // 脱敏模式，只带 host，不含完整 URL 与凭证）。
-func (s *server) handleProbeTemplate(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleProbeRuleSet(w http.ResponseWriter, r *http.Request) {
 	if s.st == nil {
 		writeJSONError(w, http.StatusNotFound, "admin API not enabled")
 		return
@@ -54,7 +54,7 @@ func (s *server) handleProbeTemplate(w http.ResponseWriter, r *http.Request) {
 	head, truncated, err := s.f.FetchHead(r.Context(), req.URL, probeMaxBytes)
 	if err != nil {
 		host := hostOf(req.URL)
-		s.logger.Warn("probe template fetch failed", "host", host, "error", sanitizeErr(err, req.URL, host))
+		s.logger.Warn("probe rule set fetch failed", "host", host, "error", sanitizeErr(err, req.URL, host))
 		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("拉取规则集失败: %s", host))
 		return
 	}

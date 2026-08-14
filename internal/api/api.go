@@ -72,11 +72,11 @@ func NewServer(cfg *config.Config, f *fetcher.Fetcher, st ...*store.Store) http.
 		admin.HandleFunc("POST /api/v1/convert/run", s.handleConvertRun)
 		admin.HandleFunc("GET /api/v1/logs", s.handleListLogs)
 		admin.HandleFunc("POST /api/v1/logs/{id}/retry", s.handleLogRetry)
-		admin.HandleFunc("GET /api/v1/templates", s.handleListTemplates)
-		admin.HandleFunc("POST /api/v1/templates", s.handleCreateTemplate)
-		admin.HandleFunc("PUT /api/v1/templates/{id}", s.handleUpdateTemplate)
-		admin.HandleFunc("DELETE /api/v1/templates/{id}", s.handleDeleteTemplate)
-		admin.HandleFunc("POST /api/v1/templates/probe", s.handleProbeTemplate)
+		admin.HandleFunc("GET /api/v1/rule-sets", s.handleListRuleSets)
+		admin.HandleFunc("POST /api/v1/rule-sets", s.handleCreateRuleSet)
+		admin.HandleFunc("PUT /api/v1/rule-sets/{id}", s.handleUpdateRuleSet)
+		admin.HandleFunc("DELETE /api/v1/rule-sets/{id}", s.handleDeleteRuleSet)
+		admin.HandleFunc("POST /api/v1/rule-sets/probe", s.handleProbeRuleSet)
 		admin.HandleFunc("GET /api/v1/version", s.handleVersion)
 		// 未匹配的 /api/v1/* 子路径 → JSON 404（避免 Go 默认 text/plain 404）
 		admin.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +112,7 @@ type pipelineError struct {
 type convertResult struct {
 	nodes       []map[string]any // transform 后的节点（name/type 等）
 	groups      []map[string]any // groups.Build 产物
-	cfg         map[string]any   // template.Build 产物（含规则模板注入）
+	cfg         map[string]any   // template.Build 产物（含规则集注入）
 	data        []byte           // 渲染后的 YAML（render=false 时为空，失败源告警注释已 prepend）
 	nodeCount   int
 	warnings    []string // 失败源告警（"host: error" 预格式化，sanitizeErr 已脱敏）；无失败时为空数组
@@ -121,12 +121,12 @@ type convertResult struct {
 
 // runPipeline 执行转换管线：拉取→解析→节点级校验→transform→groups→
 // ApplyStripEmoji（strip_emoji=true 时剥离节点名 emoji，可选）→
-// template（可选规则模板注入）→（render=true 时）渲染+校验。
+// template（可选规则集注入）→（render=true 时）渲染+校验。
 //
 // 语义分层：结构非法的源 URL 由调用方在进入本函数前校验（400）；结构合法但
 // 拉取/解析失败的源记 warn 并跳过，全部失败 → 502；transform 参数错误
 // （transform.ErrInvalidRegex）→ 400；其余内部错误 → 500。
-func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Filter, opts template.Options, tpls []store.RuleTemplate, render bool) (*convertResult, *pipelineError) {
+func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Filter, opts template.Options, ruleSets []store.RuleSet, render bool) (*convertResult, *pipelineError) {
 	ctx := r.Context()
 	var allNodes []map[string]any
 	failedHosts := make([]string, 0)
@@ -192,26 +192,27 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 	// R2：剥离节点名 emoji（识别已在 groups.Build 基于原始名完成）；
 	// strip=false 时 no-op。剥离后统一 uniqueName 去重并改写组 proxies 引用。
 	transform.ApplyStripEmoji(nodes, groupsList, filter.StripEmoji)
-	// R3 模板专属策略组：必须先于 template.Build 追加到 groupsList（Build 会
+	// R3 规则集专属策略组：必须先于 template.Build 追加到 groupsList（Build 会
 	// 把组列表固化进 cfgMap["proxy-groups"]，事后 append 不生效）。
-	// 组 = select，proxies=[全部去重节点名..., 直连组, 拒绝组]；组名与已有组
-	// （手动选择/自动选择/地区组/其他节点/直连/拒绝/已加模板组）冲突时加
-	// 「(模板)」后缀递增。RULE-SET,<模板名>,<最终组名> 行在 cfgMap 构建后由
-	// ApplyRuleProviders 一次性注入（cfg["rule-providers"] 整体覆盖，多模板
-	// 严禁逐次调用）。
+	// 组 = select，proxies 复制「手动选择」组（groupsList[0]）的 proxies（含
+	// 自动选择/地区组/其他节点/直连/拒绝等组引用，深拷贝避免共享底层数组）；
+	// 组名与已有组（手动选择/自动选择/地区组/其他节点/直连/拒绝/已加规则集组）
+	// 冲突时加「(规则集)」后缀递增。RULE-SET,<规则集名>,<最终组名> 行在
+	// cfgMap 构建后由 ApplyRuleProviders 一次性注入（cfg["rule-providers"]
+	// 整体覆盖，多规则集严禁逐次调用）。
 	var rps []template.RuleProvider
-	if len(tpls) > 0 {
-		// P1-2：同名模板（不同 id）会让 rule-providers map 键互相覆盖、前者 URL
-		// 静默丢失（两个专属组的 RULE-SET 都引用后者规则集）→ 400 拒绝整个请求。
-		// store 无名称唯一性约束，这里在构造 rps 前显式拦截。
-		seenNames := make(map[string]bool, len(tpls))
-		for _, t := range tpls {
-			if seenNames[t.Name] {
-				return nil, &pipelineError{code: http.StatusBadRequest, msg: fmt.Sprintf("模板名称冲突: %s(存在同名模板)", t.Name)}
+	if len(ruleSets) > 0 {
+		// P1-2：同名规则集（不同 id）会让 rule-providers map 键互相覆盖、前者
+		// URL 静默丢失（两个专属组的 RULE-SET 都引用后者规则集）→ 400 拒绝整个
+		// 请求。store 无名称唯一性约束，这里在构造 rps 前显式拦截。
+		seenNames := make(map[string]bool, len(ruleSets))
+		for _, rs := range ruleSets {
+			if seenNames[rs.Name] {
+				return nil, &pipelineError{code: http.StatusBadRequest, msg: fmt.Sprintf("规则集名称冲突: %s(存在同名规则集)", rs.Name)}
 			}
-			seenNames[t.Name] = true
+			seenNames[rs.Name] = true
 		}
-		usedNames := make(map[string]bool, len(groupsList)+len(tpls))
+		usedNames := make(map[string]bool, len(groupsList)+len(ruleSets))
 		for _, g := range groupsList {
 			if n, ok := g["name"].(string); ok {
 				usedNames[n] = true
@@ -228,20 +229,33 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 		}
 		usedNames["DIRECT"] = true
 		usedNames["REJECT"] = true
-		rps = make([]template.RuleProvider, 0, len(tpls))
-		for _, t := range tpls {
-			gname := uniqueTemplateGroupName(t.Name, usedNames)
+		rps = make([]template.RuleProvider, 0, len(ruleSets))
+		for _, rs := range ruleSets {
+			gname := uniqueRuleSetGroupName(rs.Name, usedNames)
 			usedNames[gname] = true
-			proxies := make([]any, 0, len(nodes)+2)
-			for _, n := range nodes {
-				proxies = append(proxies, n["name"])
+			// 专属组 proxies = 深拷贝「手动选择」组（groupsList[0]，Build 保证
+			// 首元素是手动选择组）的 proxies：成员构成与手动组一致，用户可在
+			// 专属组内直接引用自动选择/地区组/直连/拒绝等。复制在 ApplyStripEmoji
+			// 之后，节点名已是最终名。
+			var proxies []any
+			if len(groupsList) > 0 {
+				if src, ok := groupsList[0]["proxies"].([]any); ok {
+					proxies = append([]any(nil), src...)
+				}
 			}
-			proxies = append(proxies, groups.GroupDirect, groups.GroupReject)
+			if proxies == nil {
+				// 防御性回退：groupsList 为空或缺 proxies → 全节点名 + 直连 + 拒绝
+				proxies = make([]any, 0, len(nodes)+2)
+				for _, n := range nodes {
+					proxies = append(proxies, n["name"])
+				}
+				proxies = append(proxies, groups.GroupDirect, groups.GroupReject)
+			}
 			groupsList = append(groupsList, map[string]any{
 				"name": gname, "type": "select", "proxies": proxies,
 			})
 			rps = append(rps, template.RuleProvider{
-				Name: t.Name, URL: t.URL, Behavior: t.Behavior, Format: t.Format,
+				Name: rs.Name, URL: rs.URL, Behavior: rs.Behavior, Format: rs.Format,
 				TargetGroup: gname,
 			})
 		}
@@ -366,20 +380,20 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 		SCV:   truthy(q.Get("scv")),
 	}
 
-	// R4：template_id 逗号分隔多值；任一模板不存在或禁用 → 400
-	tpls, perr := s.resolveTemplates(q.Get("template_id"))
+	// R4：ruleset_id 逗号分隔多值；任一规则集不存在或禁用 → 400
+	ruleSets, perr := s.resolveRuleSets(q.Get("ruleset_id"))
 	if perr != nil {
 		s.logSubError(w, r, start, perr.msg, srcID, srcName, urlFull, q)
 		return
 	}
-	res, perr := s.runPipeline(r, sources, filter, opts, tpls, true)
+	res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, true)
 	s.appendLog(store.LogEntry{
 		Kind:        "sub",
 		SourceID:    srcID,
 		SourceName:  srcName,
 		URLRedacted: redactURL(urlFullOrSources(urlFull, sources)),
 		URLFull:     urlFull,
-		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), opts.UDP, opts.TLS13, opts.SCV, truthy(q.Get("strip_emoji")), q.Get("template_id")),
+		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), opts.UDP, opts.TLS13, opts.SCV, truthy(q.Get("strip_emoji")), q.Get("ruleset_id")),
 		Status:      statusOf(perr),
 		Error:       errOf(perr),
 		NodeCount:   nodeCountOf(res, perr),
@@ -411,8 +425,8 @@ type convertRequest struct {
 	UDP        *bool    `json:"udp"`
 	TLS13      *bool    `json:"tls13"`
 	SCV        *bool    `json:"scv"`
-	StripEmoji *bool    `json:"strip_emoji"`
-	TemplateID string   `json:"template_id"`
+	StripEmoji *bool   `json:"strip_emoji"`
+	RuleSetID  string  `json:"ruleset_id"`
 }
 
 // handleConvert 是 convert 端点（preview/run）的公共实现。
@@ -483,8 +497,8 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 			return
 		}
 
-		// 规则模板：template_id 逗号分隔多值；任一模板不存在或禁用 → 400
-		tpls, perr := s.resolveTemplates(req.TemplateID)
+		// 规则集：ruleset_id 逗号分隔多值；任一规则集不存在或禁用 → 400
+		ruleSets, perr := s.resolveRuleSets(req.RuleSetID)
 		if perr != nil {
 			writeJSONError(w, perr.code, perr.msg)
 			return
@@ -493,14 +507,14 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 		filter := transform.Filter{Rename: req.Rename, Include: req.Include, Exclude: req.Exclude, StripEmoji: boolVal(req.StripEmoji)}
 		opts := template.Options{UDP: boolVal(req.UDP), TLS13: boolVal(req.TLS13), SCV: boolVal(req.SCV)}
 
-		res, perr := s.runPipeline(r, sources, filter, opts, tpls, render)
+		res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, render)
 		s.appendLog(store.LogEntry{
 			Kind:        kind,
 			SourceID:    srcID,
 			SourceName:  srcName,
 			URLRedacted: redactURL(urlFullOrSources(urlFull, sources)),
 			URLFull:     urlFull,
-			Params:      buildParams(req.Include, req.Exclude, req.Rename, opts.UDP, opts.TLS13, opts.SCV, boolVal(req.StripEmoji), req.TemplateID),
+			Params:      buildParams(req.Include, req.Exclude, req.Rename, opts.UDP, opts.TLS13, opts.SCV, boolVal(req.StripEmoji), req.RuleSetID),
 			Status:      statusOf(perr),
 			Error:       errOf(perr),
 			NodeCount:   nodeCountOf(res, perr),
@@ -620,16 +634,16 @@ func (s *server) handleLogRetry(w http.ResponseWriter, r *http.Request) {
 		TLS13: boolParam(entry.Params, "tls13"),
 		SCV:   boolParam(entry.Params, "scv"),
 	}
-	var tpls []store.RuleTemplate
-	if tplID := strParam(entry.Params, "template_id"); tplID != "" {
+	var ruleSets []store.RuleSet
+	if rsID := strParam(entry.Params, "ruleset_id"); rsID != "" {
 		var perr *pipelineError
-		if tpls, perr = s.resolveTemplates(tplID); perr != nil {
+		if ruleSets, perr = s.resolveRuleSets(rsID); perr != nil {
 			writeJSONError(w, perr.code, perr.msg)
 			return
 		}
 	}
 
-	res, perr := s.runPipeline(r, sources, filter, opts, tpls, false)
+	res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, false)
 	s.appendLog(store.LogEntry{
 		Kind:        "preview",
 		SourceID:    entry.SourceID, // 逗号多值原样保留
@@ -810,22 +824,22 @@ func (s *server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"logs": out})
 }
 
-// ---------- 规则模板 CRUD ----------
+// ---------- 规则集 CRUD ----------
 
-func (s *server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleListRuleSets(w http.ResponseWriter, r *http.Request) {
 	if s.st == nil {
 		writeJSONError(w, http.StatusNotFound, "admin API not enabled")
 		return
 	}
-	templates := s.st.ListTemplates()
-	out := make([]templateResp, 0, len(templates))
-	for _, t := range templates {
-		out = append(out, toTemplateResp(t))
+	ruleSets := s.st.ListRuleSets()
+	out := make([]ruleSetResp, 0, len(ruleSets))
+	for _, rs := range ruleSets {
+		out = append(out, toRuleSetResp(rs))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"templates": out})
+	writeJSON(w, http.StatusOK, map[string]any{"rule_sets": out})
 }
 
-type templateReq struct {
+type ruleSetReq struct {
 	Name     string `json:"name"`
 	URL      string `json:"url"`
 	Behavior string `json:"behavior"`
@@ -833,8 +847,8 @@ type templateReq struct {
 	Enabled  *bool  `json:"enabled"`
 }
 
-// templateResp 是规则模板的对外响应结构：URL 脱敏后返回。
-type templateResp struct {
+// ruleSetResp 是规则集的对外响应结构：URL 脱敏后返回。
+type ruleSetResp struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	URL       string `json:"url"`
@@ -845,19 +859,19 @@ type templateResp struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-func toTemplateResp(t store.RuleTemplate) templateResp {
-	return templateResp{
-		ID: t.ID, Name: t.Name, URL: redactURL(t.URL), Behavior: t.Behavior, Format: t.Format,
-		Enabled: t.Enabled, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+func toRuleSetResp(rs store.RuleSet) ruleSetResp {
+	return ruleSetResp{
+		ID: rs.ID, Name: rs.Name, URL: redactURL(rs.URL), Behavior: rs.Behavior, Format: rs.Format,
+		Enabled: rs.Enabled, CreatedAt: rs.CreatedAt, UpdatedAt: rs.UpdatedAt,
 	}
 }
 
-func (s *server) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleCreateRuleSet(w http.ResponseWriter, r *http.Request) {
 	if s.st == nil {
 		writeJSONError(w, http.StatusNotFound, "admin API not enabled")
 		return
 	}
-	var req templateReq
+	var req ruleSetReq
 	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -876,20 +890,20 @@ func (s *server) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	t, err := s.st.CreateTemplate(req.Name, req.URL, req.Behavior, req.Format, boolVal(req.Enabled))
+	rs, err := s.st.CreateRuleSet(req.Name, req.URL, req.Behavior, req.Format, boolVal(req.Enabled))
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"template": toTemplateResp(t)})
+	writeJSON(w, http.StatusCreated, map[string]any{"rule_set": toRuleSetResp(rs)})
 }
 
-func (s *server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUpdateRuleSet(w http.ResponseWriter, r *http.Request) {
 	if s.st == nil {
 		writeJSONError(w, http.StatusNotFound, "admin API not enabled")
 		return
 	}
-	var patch store.TemplatePatch
+	var patch store.RuleSetPatch
 	if err := decodeJSONBody(w, r, &patch); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -906,20 +920,20 @@ func (s *server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	t, err := s.st.UpdateTemplate(r.PathValue("id"), patch)
+	rs, err := s.st.UpdateRuleSet(r.PathValue("id"), patch)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"template": toTemplateResp(t)})
+	writeJSON(w, http.StatusOK, map[string]any{"rule_set": toRuleSetResp(rs)})
 }
 
-func (s *server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleDeleteRuleSet(w http.ResponseWriter, r *http.Request) {
 	if s.st == nil {
 		writeJSONError(w, http.StatusNotFound, "admin API not enabled")
 		return
 	}
-	if err := s.st.DeleteTemplate(r.PathValue("id")); err != nil {
+	if err := s.st.DeleteRuleSet(r.PathValue("id")); err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
@@ -955,33 +969,34 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 
 // ---------- 工具函数 ----------
 
-// uniqueTemplateGroupName 为模板专属策略组分配唯一组名：与已有组名（手动选择/
-// 自动选择/地区组/其他节点/直连/拒绝/已添加的模板组）冲突时追加「(模板)」后缀，
-// 仍冲突则递增「(模板)2」「(模板)3」……直到唯一。调用方须在 used 中登记新名。
-func uniqueTemplateGroupName(base string, used map[string]bool) string {
+// uniqueRuleSetGroupName 为规则集专属策略组分配唯一组名：与已有组名（手动选择/
+// 自动选择/地区组/其他节点/直连/拒绝/已添加的规则集组）冲突时追加「(规则集)」
+// 后缀，仍冲突则递增「(规则集)2」「(规则集)3」……直到唯一。调用方须在 used
+// 中登记新名。
+func uniqueRuleSetGroupName(base string, used map[string]bool) string {
 	if !used[base] {
 		return base
 	}
-	cand := base + "(模板)"
+	cand := base + "(规则集)"
 	for i := 2; used[cand]; i++ {
-		cand = base + "(模板)" + strconv.Itoa(i)
+		cand = base + "(规则集)" + strconv.Itoa(i)
 	}
 	return cand
 }
 
-// resolveTemplates 解析逗号分隔的 template_id 列表并逐个校验（存在且启用）；
-// 任一不存在或 disabled → 400「模板不存在或已禁用」。空串 → 返回 nil（无模板）。
-// handleSub 在 st==nil（未挂载 store）时传 template_id 同样按不存在处理。
-func (s *server) resolveTemplates(raw string) ([]store.RuleTemplate, *pipelineError) {
+// resolveRuleSets 解析逗号分隔的 ruleset_id 列表并逐个校验（存在且启用）；
+// 任一不存在或 disabled → 400「规则集不存在或已禁用」。空串 → 返回 nil（无规则集）。
+// handleSub 在 st==nil（未挂载 store）时传 ruleset_id 同样按不存在处理。
+func (s *server) resolveRuleSets(raw string) ([]store.RuleSet, *pipelineError) {
 	if raw == "" {
 		return nil, nil
 	}
 	if s.st == nil {
-		return nil, &pipelineError{code: http.StatusBadRequest, msg: "模板不存在或已禁用"}
+		return nil, &pipelineError{code: http.StatusBadRequest, msg: "规则集不存在或已禁用"}
 	}
 	ids := strings.Split(raw, ",")
-	tpls := make([]store.RuleTemplate, 0, len(ids))
-	// P2-2：重复 template_id（如 a,a）去重只保留第一个，避免同一模板生成两份
+	ruleSets := make([]store.RuleSet, 0, len(ids))
+	// P2-2：重复 ruleset_id（如 a,a）去重只保留第一个，避免同一规则集生成两份
 	// 专属组与 RULE-SET。
 	seen := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -990,13 +1005,13 @@ func (s *server) resolveTemplates(raw string) ([]store.RuleTemplate, *pipelineEr
 			continue
 		}
 		seen[id] = true
-		t, ok := s.st.GetTemplate(id)
-		if !ok || !t.Enabled {
-			return nil, &pipelineError{code: http.StatusBadRequest, msg: "模板不存在或已禁用"}
+		rs, ok := s.st.GetRuleSet(id)
+		if !ok || !rs.Enabled {
+			return nil, &pipelineError{code: http.StatusBadRequest, msg: "规则集不存在或已禁用"}
 		}
-		tpls = append(tpls, t)
+		ruleSets = append(ruleSets, rs)
 	}
-	return tpls, nil
+	return ruleSets, nil
 }
 
 // splitSources 按 | 拆分多源 URL 参数，去空白与空项。
@@ -1010,7 +1025,7 @@ func splitSources(raw string) []string {
 	return out
 }
 
-// splitIDs 按逗号拆分 ID 列表，去空白与空项（与 template_id 解析一致）。
+// splitIDs 按逗号拆分 ID 列表，去空白与空项（与 ruleset_id 解析一致）。
 func splitIDs(raw string) []string {
 	var out []string
 	for _, s := range strings.Split(raw, ",") {
@@ -1170,14 +1185,14 @@ func urlFullOrSources(urlFull string, sources []string) string {
 	return strings.Join(sources, "|")
 }
 
-// buildParams 组装日志 Params（template_id 仅非空时写入）。
-func buildParams(include, exclude, rename string, udp, tls13, scv, stripEmoji bool, templateID string) map[string]any {
+// buildParams 组装日志 Params（ruleset_id 仅非空时写入）。
+func buildParams(include, exclude, rename string, udp, tls13, scv, stripEmoji bool, ruleSetID string) map[string]any {
 	m := map[string]any{
 		"include": include, "exclude": exclude, "rename": rename,
 		"udp": udp, "tls13": tls13, "scv": scv, "strip_emoji": stripEmoji,
 	}
-	if templateID != "" {
-		m["template_id"] = templateID
+	if ruleSetID != "" {
+		m["ruleset_id"] = ruleSetID
 	}
 	return m
 }
@@ -1238,7 +1253,7 @@ func (s *server) logSubError(w http.ResponseWriter, r *http.Request, start time.
 		SourceName:  srcName,
 		URLRedacted: redactURL(rawURL),
 		URLFull:     rawURL,
-		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), truthy(q.Get("udp")), truthy(q.Get("tls13")), truthy(q.Get("scv")), truthy(q.Get("strip_emoji")), q.Get("template_id")),
+		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), truthy(q.Get("udp")), truthy(q.Get("tls13")), truthy(q.Get("scv")), truthy(q.Get("strip_emoji")), q.Get("ruleset_id")),
 		Status:      "fail",
 		Error:       &errMsg,
 		DurationMS:  time.Since(start).Milliseconds(),

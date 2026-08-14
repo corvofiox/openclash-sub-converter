@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestNewCreatesDirAndEmpty 空目录 → sources/logs 空态；templates 种入 8 个
+// TestNewCreatesDirAndEmpty 空目录 → sources/logs 空态；ruleSets 种入 8 个
 // 预置（首次启动种子）；目录不存在时自动创建。
 func TestNewCreatesDirAndEmpty(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "data")
@@ -27,13 +27,13 @@ func TestNewCreatesDirAndEmpty(t *testing.T) {
 	if n := len(s.ListLogs(10)); n != 0 {
 		t.Errorf("logs = %d, want 0", n)
 	}
-	if n := len(s.ListTemplates()); n != 8 {
-		t.Errorf("templates = %d, want 8（首次启动种入预置）", n)
+	if n := len(s.ListRuleSets()); n != 8 {
+		t.Errorf("ruleSets = %d, want 8（首次启动种入预置）", n)
 	}
-	// 首次启动只落盘 templates.json（预置种子）；sources/logs 空态不落盘
+	// 首次启动只落盘 rulesets.json（预置种子）；sources/logs 空态不落盘
 	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 || entries[0].Name() != "templates.json" {
-		t.Errorf("新目录文件 = %v, want 仅 templates.json", entries)
+	if len(entries) != 1 || entries[0].Name() != "rulesets.json" {
+		t.Errorf("新目录文件 = %v, want 仅 rulesets.json", entries)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestVersionMismatchRecovery(t *testing.T) {
 	}
 }
 
-// TestAllFilesRoundTrip 三组数据同目录往返：sources/logs/templates 一并持久化。
+// TestAllFilesRoundTrip 三组数据同目录往返：sources/logs/ruleSets 一并持久化。
 func TestAllFilesRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	s1, err := New(dir)
@@ -84,7 +84,7 @@ func TestAllFilesRoundTrip(t *testing.T) {
 	}
 	src, _ := s1.CreateSource("机场A", "https://a.example.com", true)
 	logEntry, _ := s1.AppendLog(LogEntry{Kind: "convert", SourceID: src.ID, Status: "ok", NodeCount: 3})
-	tpl, _ := s1.CreateTemplate("cn", "https://e.com/cn.yaml", "domain", "yaml", true)
+	rs, _ := s1.CreateRuleSet("cn", "https://e.com/cn.yaml", "domain", "yaml", true)
 
 	s2, err := New(dir)
 	if err != nil {
@@ -96,8 +96,8 @@ func TestAllFilesRoundTrip(t *testing.T) {
 	if got, ok := s2.GetLog(logEntry.ID); !ok || got.SourceID != src.ID {
 		t.Errorf("log 回读失败: %+v, %v", got, ok)
 	}
-	if got, ok := s2.GetTemplate(tpl.ID); !ok || got.Behavior != "domain" {
-		t.Errorf("template 回读失败: %+v, %v", got, ok)
+	if got, ok := s2.GetRuleSet(rs.ID); !ok || got.Behavior != "domain" {
+		t.Errorf("ruleSet 回读失败: %+v, %v", got, ok)
 	}
 	// 磁盘格式校验：version 字段存在且为 1（MarshalIndent 美化输出）
 	raw, err := os.ReadFile(filepath.Join(dir, "sources.json"))
@@ -144,7 +144,7 @@ func TestConcurrentWrites(t *testing.T) {
 			default:
 				_ = s.ListSources()
 				_ = s.ListLogs(10)
-				_ = s.ListTemplates()
+				_ = s.ListRuleSets()
 			}
 		}
 	}()

@@ -17,7 +17,7 @@
     <button data-tab="sources" class="tab active">订阅源</button>
     <button data-tab="convert" class="tab">订阅转换</button>
     <button data-tab="logs" class="tab">转换日志</button>
-    <button data-tab="templates" class="tab">规则模板</button>
+    <button data-tab="rule-sets" class="tab">规则集</button>
     <button data-tab="auth" class="tab">认证</button>
   </nav>
   <div class="auth-status">
@@ -57,16 +57,22 @@
   <section id="sec-convert" class="sec">
     <div class="card">
       <h2>订阅转换</h2>
-      <label>数据源（可多选，聚合订阅）
-        <div class="pick-toolbar">
-          <span id="convSrcSummary" class="pick-summary">（加载中…）</span>
-          <span class="pick-actions">
-            <button type="button" id="btnSrcAll" class="mini-btn">全选</button>
-            <button type="button" id="btnSrcClear" class="mini-btn">清空</button>
-          </span>
+      <div class="field">
+        <span class="field-label">数据源（可多选，聚合订阅）</span>
+        <div class="multi-select" id="srcMulti">
+          <div class="ms-trigger" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" title="点击展开/收起">
+            <span id="convSrcSummary" class="ms-summary">（加载中…）</span>
+            <span class="ms-arrow">▾</span>
+          </div>
+          <div class="ms-panel">
+            <div id="convSrcGrid" class="ms-options" role="listbox"><span class="hint">（加载中…）</span></div>
+            <div class="ms-actions">
+              <button type="button" id="btnSrcAll" class="mini-btn">全选</button>
+              <button type="button" id="btnSrcClear" class="mini-btn">清空</button>
+            </div>
+          </div>
         </div>
-        <div id="convSrcGrid" class="pick-grid"><span class="hint">（加载中…）</span></div>
-      </label>
+      </div>
       <details id="tempUrlWrap">
         <summary>或附加临时 URL（可与上方已选数据源混合聚合，多源用 | 分隔）</summary>
         <input type="text" id="convUrl" placeholder="https://example.com/sub?token=...（多源用 | 分隔）">
@@ -75,16 +81,22 @@
         <label>include 正则 <input type="text" id="convInclude" placeholder="正则，命中保留；多个用 | 分隔，如 日本|香港"></label>
         <label>exclude 正则 <input type="text" id="convExclude" placeholder="正则，命中剔除；多个用 | 分隔，如 剩余|距离|套餐"></label>
         <label>rename 正则 <input type="text" id="convRename" placeholder="格式：正则/替换，多条用 , 分隔，如 日本/JP,香港/HK"></label>
-        <label>规则模板（可多选，生成各自专属策略组）
-          <div class="pick-toolbar">
-            <span id="convTplSummary" class="pick-summary">（加载中…）</span>
-            <span class="pick-actions">
-              <button type="button" id="btnTplAll" class="mini-btn">全选</button>
-              <button type="button" id="btnTplClear" class="mini-btn">清空</button>
-            </span>
+      </div>
+      <div class="field">
+        <span class="field-label">规则集（可多选，为每个规则集生成专属策略组）</span>
+        <div class="multi-select" id="rsMulti">
+          <div class="ms-trigger" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" title="点击展开/收起">
+            <span id="convRsSummary" class="ms-summary">（加载中…）</span>
+            <span class="ms-arrow">▾</span>
           </div>
-          <div id="convTplGrid" class="pick-grid"><span class="hint">（加载中…）</span></div>
-        </label>
+          <div class="ms-panel">
+            <div id="convRsGrid" class="ms-options" role="listbox"><span class="hint">（加载中…）</span></div>
+            <div class="ms-actions">
+              <button type="button" id="btnRsAll" class="mini-btn">全选</button>
+              <button type="button" id="btnRsClear" class="mini-btn">清空</button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="checks">
         <label class="inline"><input type="checkbox" id="convScv"> scv（skip-cert-verify）</label>
@@ -124,47 +136,47 @@
     </div>
   </section>
 
-  <!-- ============ 规则模板 ============ -->
-  <section id="sec-templates" class="sec">
+  <!-- ============ 规则集 ============ -->
+  <section id="sec-rule-sets" class="sec">
     <div class="sec-head">
-      <h2>规则模板</h2>
-      <button id="btnNewTemplate" class="btn primary">＋ 新增模板</button>
+      <h2>规则集</h2>
+      <button id="btnNewRuleSet" class="btn primary">＋ 新增规则集</button>
     </div>
     <p class="hint">OpenClash 侧拉取规则集，本服务仅注入 URL 到输出 YAML 的 rule-providers。</p>
-    <form id="templateForm" class="card form hidden">
-      <h3 id="templateFormTitle">新增模板</h3>
-      <label>名称 <input type="text" id="tplName" placeholder="例如：广告拦截" required></label>
-      <label>规则集 URL <input type="text" id="tplUrl" placeholder="https://example.com/rules.yaml" required></label>
-      <button type="button" id="btnProbeTemplate" class="btn small">自动探测</button>
-      <div id="tplProbeBox" class="hidden">
-        <p id="tplProbeReason" class="hint"></p>
-        <pre id="tplProbePreview"></pre>
+    <form id="ruleSetForm" class="card form hidden">
+      <h3 id="ruleSetFormTitle">新增规则集</h3>
+      <label>名称 <input type="text" id="rsName" placeholder="例如：广告拦截" required></label>
+      <label>规则集 URL <input type="text" id="rsUrl" placeholder="https://example.com/rules.yaml" required></label>
+      <button type="button" id="btnProbeRuleSet" class="btn small">自动探测</button>
+      <div id="rsProbeBox" class="hidden">
+        <p id="rsProbeReason" class="hint"></p>
+        <pre id="rsProbePreview"></pre>
       </div>
       <div class="grid2">
         <label>behavior
-          <select id="tplBehavior">
+          <select id="rsBehavior">
             <option value="domain">domain</option>
             <option value="ipcidr">ipcidr</option>
             <option value="classical">classical</option>
           </select>
         </label>
         <label>format
-          <select id="tplFormat">
+          <select id="rsFormat">
             <option value="yaml">yaml</option>
             <option value="text">text</option>
           </select>
         </label>
       </div>
-      <label class="inline"><input type="checkbox" id="tplEnabled" checked> 启用</label>
+      <label class="inline"><input type="checkbox" id="rsEnabled" checked> 启用</label>
       <div class="form-actions">
         <button type="submit" class="btn primary">保存</button>
-        <button type="button" id="btnCancelTemplate" class="btn">取消</button>
+        <button type="button" id="btnCancelRuleSet" class="btn">取消</button>
       </div>
     </form>
     <div class="card">
       <table>
         <thead><tr><th>名称</th><th>URL</th><th>behavior</th><th>format</th><th>启用</th><th>操作</th></tr></thead>
-        <tbody id="templateRows"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+        <tbody id="ruleSetRows"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
       </table>
     </div>
   </section>

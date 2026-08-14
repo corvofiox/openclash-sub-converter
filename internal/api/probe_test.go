@@ -1,5 +1,5 @@
-// 规则模板自动探测测试：analyzeRuleHead / previewLines 纯函数判定 +
-// /api/v1/templates/probe handler 级行为（httptest 本地规则源 + 错误映射
+// 规则集自动探测测试：analyzeRuleHead / previewLines 纯函数判定 +
+// /api/v1/rule-sets/probe handler 级行为（httptest 本地规则源 + 错误映射
 // + 鉴权）。
 package api
 
@@ -203,11 +203,11 @@ func TestPreviewLines(t *testing.T) {
 	}
 }
 
-// ---------- handler：/api/v1/templates/probe ----------
+// ---------- handler：/api/v1/rule-sets/probe ----------
 
 // doProbe 向 probe 端点 POST 一次 JSON body，返回 recorder。
 func doProbe(h http.Handler, body string) *httptest.ResponseRecorder {
-	return doJSON(h, http.MethodPost, "/api/v1/templates/probe", body, nil)
+	return doJSON(h, http.MethodPost, "/api/v1/rule-sets/probe", body, nil)
 }
 
 // decodeProbe 解析 probe 成功响应。
@@ -223,7 +223,7 @@ func decodeProbe(t *testing.T, rec *httptest.ResponseRecorder) probeResp {
 	return resp
 }
 
-func TestProbeTemplateYamlDomain(t *testing.T) {
+func TestProbeRuleSetYamlDomain(t *testing.T) {
 	h := newTestServer(t)
 	src := fakeSource(t, http.StatusOK,
 		"payload:\n"+
@@ -248,7 +248,7 @@ func TestProbeTemplateYamlDomain(t *testing.T) {
 	}
 }
 
-func TestProbeTemplateTextIPCidr(t *testing.T) {
+func TestProbeRuleSetTextIPCidr(t *testing.T) {
 	h := newTestServer(t)
 	src := fakeSource(t, http.StatusOK,
 		"1.2.3.0/24\nIP-CIDR,10.0.0.0/8\nIP-CIDR6,2001:db8::/32\n"+
@@ -262,7 +262,7 @@ func TestProbeTemplateTextIPCidr(t *testing.T) {
 	}
 }
 
-func TestProbeTemplateClassical(t *testing.T) {
+func TestProbeRuleSetClassical(t *testing.T) {
 	h := newTestServer(t)
 	src := fakeSource(t, http.StatusOK,
 		"GEOIP,CN\nMATCH\nDOMAIN-SUFFIX,a.com\nIP-CIDR,1.1.1.0/24\nPROCESS-NAME,sshd\nRULE-SET,https://x\n")
@@ -272,8 +272,8 @@ func TestProbeTemplateClassical(t *testing.T) {
 	}
 }
 
-// TestProbeTemplateRedactsURL 响应 URL 脱敏：query token 不泄露。
-func TestProbeTemplateRedactsURL(t *testing.T) {
+// TestProbeRuleSetRedactsURL 响应 URL 脱敏：query token 不泄露。
+func TestProbeRuleSetRedactsURL(t *testing.T) {
 	h := newTestServer(t)
 	src := fakeSource(t, http.StatusOK, "DOMAIN-SUFFIX,a.com\n")
 	raw := src.URL + "/sub?token=SECRET"
@@ -286,7 +286,7 @@ func TestProbeTemplateRedactsURL(t *testing.T) {
 	}
 }
 
-func TestProbeTemplateErrors(t *testing.T) {
+func TestProbeRuleSetErrors(t *testing.T) {
 	h := newTestServer(t)
 	// URL 为空 → 400
 	if rec := doProbe(h, `{"url":""}`); rec.Code != http.StatusBadRequest {
@@ -317,8 +317,8 @@ func TestProbeTemplateErrors(t *testing.T) {
 	}
 }
 
-// TestProbeTemplateAllComments 全注释规则集：200 + behavior 空 + preview 非空。
-func TestProbeTemplateAllComments(t *testing.T) {
+// TestProbeRuleSetAllComments 全注释规则集：200 + behavior 空 + preview 非空。
+func TestProbeRuleSetAllComments(t *testing.T) {
 	h := newTestServer(t)
 	src := fakeSource(t, http.StatusOK, "# comment one\n# comment two\n\n# last\n")
 	resp := decodeProbe(t, doProbe(h, fmt.Sprintf(`{"url":%q}`, src.URL)))
@@ -336,9 +336,9 @@ func TestProbeTemplateAllComments(t *testing.T) {
 	}
 }
 
-// TestProbeTemplateTruncated 超 512KB 规则集：200 + truncated=true，截断后
+// TestProbeRuleSetTruncated 超 512KB 规则集：200 + truncated=true，截断后
 // 头部仍可判定 domain。
-func TestProbeTemplateTruncated(t *testing.T) {
+func TestProbeRuleSetTruncated(t *testing.T) {
 	h := newTestServer(t)
 	line := "DOMAIN-SUFFIX," + strings.Repeat("a", 80) + ".example.com\n" // ~110 字节
 	big := strings.Repeat(line, 6000)                                     // ~660KB > 512KB
@@ -352,8 +352,8 @@ func TestProbeTemplateTruncated(t *testing.T) {
 	}
 }
 
-// TestProbeTemplateAuth 带令牌实例无 token → 401。
-func TestProbeTemplateAuth(t *testing.T) {
+// TestProbeRuleSetAuth 带令牌实例无 token → 401。
+func TestProbeRuleSetAuth(t *testing.T) {
 	h := newTestServerWithToken(t, "s3cret")
 	rec := doProbe(h, `{"url":"http://127.0.0.1:1/x"}`)
 	if rec.Code != http.StatusUnauthorized {
@@ -361,8 +361,8 @@ func TestProbeTemplateAuth(t *testing.T) {
 	}
 }
 
-// TestProbeTemplateNoStore st==nil 时不注册 /api/v1 → 404。
-func TestProbeTemplateNoStore(t *testing.T) {
+// TestProbeRuleSetNoStore st==nil 时不注册 /api/v1 → 404。
+func TestProbeRuleSetNoStore(t *testing.T) {
 	h := newTestServerNoStore(t)
 	rec := doProbe(h, `{"url":"http://127.0.0.1:1/x"}`)
 	if rec.Code != http.StatusNotFound {

@@ -35,7 +35,7 @@ type Config struct {
 // ServerConfig 是 HTTP 服务配置。
 type ServerConfig struct {
 	Port int `yaml:"port"`
-	// DataDir 是 Web 管理台数据（订阅源/日志/模板）的持久化目录。
+	// DataDir 是 Web 管理台数据（订阅源/日志/规则集）的持久化目录。
 	DataDir string `yaml:"data_dir"`
 }
 

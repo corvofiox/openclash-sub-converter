@@ -12,7 +12,7 @@ import (
 
 // topKeyOrder 定义输出 YAML 顶层键的固定顺序。mihomo 对段落顺序无要求，
 // 但固定顺序保证产物确定性（便于 diff 与契约测试）。rule-providers 由
-// template.ApplyRuleProviders 在 Render 前注入 cfg，仅规则模板启用时存在。
+// template.ApplyRuleProviders 在 Render 前注入 cfg，仅规则集启用时存在。
 var topKeyOrder = []string{
 	"mixed-port", "allow-lan", "mode", "log-level", "ipv6",
 	"dns", "proxy-groups", "proxies", "rule-providers", "rules",

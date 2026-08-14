@@ -16,7 +16,7 @@ const (
 	GroupOther  = "其他节点"
 
 	// R1：直连/拒绝策略组（type=select，proxies 分别为 [DIRECT]/[REJECT]，
-	// 供手动选择组与模板专属组作为快捷切换引用）。
+	// 供手动选择组与规则集专属组作为快捷切换引用）。
 	GroupDirect = "直连"
 	GroupReject = "拒绝"
 )

@@ -130,7 +130,7 @@ func (f *Fetcher) fetchOnce(ctx context.Context, urlStr string) ([]byte, error) 
 // 独立定义同值常量。
 const defaultFetchHeadBytes = 512 << 10
 
-// FetchHead 拉取 url 指向内容的前 maxBytes 字节（探测类用途，如规则模板
+// FetchHead 拉取 url 指向内容的前 maxBytes 字节（探测类用途，如规则集
 // 自动探测）。超出 maxBytes 时截断返回 (data, true, nil) 而非报错——探测
 // 仅需头部样本。不写缓存、不复用 f.client（独立 10s 超时客户端，避免与
 // /sub 拉取的超时/缓存语义相互影响）。

@@ -160,10 +160,10 @@ print('reject=%d' % (1 if by_name.get('拒绝') == ['REJECT'] else 0))
 print('manual_order=%d' % (1 if by_name.get('手动选择') == expect_manual else 0))
 print('manual_count=%d' % (1 if len(by_name.get('手动选择', [])) == len(expect_manual) else 0))
 print('group_count=%d' % (1 if len(order) == 4 + len(region_names) + (1 if other else 0) else 0))
-# R3：附加组名检查（argv[2]）——专属组 proxies = 全部节点名 + 直连 + 拒绝
+# R3：附加组名检查（argv[2]）——专属组 proxies = 深拷贝「手动选择」组
 if len(sys.argv) > 2:
     extra = sys.argv[2]
-    print('extra=%d' % (1 if by_name.get(extra) == node_names + ['直连', '拒绝'] else 0))
+    print('extra=%d' % (1 if by_name.get(extra) == by_name.get('手动选择') else 0))
 PYEOF
 GCHK=$(python3 $WORK/check_groups.py $WORK/out1.yaml)
 check "R1 直连组存在且 proxies=[DIRECT]" "1" "$(echo "$GCHK" | grep '^direct=' | cut -d= -f2)"
@@ -264,14 +264,14 @@ check "token: /api/v1/sources 无 token 401" "401" "$(curl -s -o /dev/null -w '%
 check "token: /api/v1/sources 带 X-Token 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/sources)"
 check "token: /sub 无 token 不 401（参数错误 400）" "400" "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:'$TOK_PORT'/sub?target=clash')"
 
-# 7.6 预置模板种子：全新数据目录（$WORK/data_tok 每次冒烟前 rm -rf）首次启动
-# 自动种入 8 个 ACL4SSR 模板，列表 ≥8 条且含 Netflix（URL 判定，python3 JSON 解析）
-TPL_SEEDED=$(curl -s -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/templates | python3 -c 'import json,sys;print(1 if len(json.load(sys.stdin)["templates"])>=8 else 0)')
-check "token: templates 预置种入 ≥8 条" "1" "$TPL_SEEDED"
-TPL_NETFLIX=$(curl -s -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/templates | python3 -c 'import json,sys;print(1 if any("Netflix" in t["url"] for t in json.load(sys.stdin)["templates"]) else 0)')
-check "token: templates 含 Netflix 预置" "1" "$TPL_NETFLIX"
+# 7.6 预置规则集种子：全新数据目录（$WORK/data_tok 每次冒烟前 rm -rf）首次启动
+# 自动种入 8 个 ACL4SSR 规则集，列表 ≥8 条且含 Netflix（URL 判定，python3 JSON 解析）
+TPL_SEEDED=$(curl -s -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/rule-sets | python3 -c 'import json,sys;print(1 if len(json.load(sys.stdin)["rule_sets"])>=8 else 0)')
+check "token: rule_sets 预置种入 ≥8 条" "1" "$TPL_SEEDED"
+TPL_NETFLIX=$(curl -s -H 'X-Token: s3cret' http://127.0.0.1:$TOK_PORT/api/v1/rule-sets | python3 -c 'import json,sys;print(1 if any("Netflix" in t["url"] for t in json.load(sys.stdin)["rule_sets"]) else 0)')
+check "token: rule_sets 含 Netflix 预置" "1" "$TPL_NETFLIX"
 
-# 7.7 规则模板自动探测（text/domain、yaml 混合、错误路径、鉴权）
+# 7.7 规则集自动探测（text/domain、yaml 混合、错误路径、鉴权）
 cat > $WORK/rules_domain.list <<'EOF'
 DOMAIN-SUFFIX,example.com
 DOMAIN-SUFFIX,google.com
@@ -292,49 +292,50 @@ payload:
 EOF
 PROBE_DOM_CODE=$(curl -s -o $WORK/probe_dom.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" \
-  http://127.0.0.1:$SRV_PORT/api/v1/templates/probe)
+  http://127.0.0.1:$SRV_PORT/api/v1/rule-sets/probe)
 check "probe text/domain 200" "200" "$PROBE_DOM_CODE"
 PROBE_DOM_OK=$(python3 -c 'import json;print(1 if json.load(open("'$WORK'/probe_dom.json"))["format"]=="text" and json.load(open("'$WORK'/probe_dom.json"))["behavior"]=="domain" else 0)')
 check "probe text/domain format=text behavior=domain" "1" "$PROBE_DOM_OK"
 curl -s -X POST -H 'Content-Type: application/json' \
   -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_mixed.yaml\"}" \
-  http://127.0.0.1:$SRV_PORT/api/v1/templates/probe > $WORK/probe_yaml.json
+  http://127.0.0.1:$SRV_PORT/api/v1/rule-sets/probe > $WORK/probe_yaml.json
 PROBE_YAML_FMT=$(python3 -c 'import json;print(json.load(open("'$WORK'/probe_yaml.json"))["format"])')
 check "probe yaml format=yaml" "yaml" "$PROBE_YAML_FMT"
-check "probe 非法 URL 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"url":"notaurl"}' http://127.0.0.1:$SRV_PORT/api/v1/templates/probe)"
-check "probe 未监听端口 502" "502" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"url":"http://127.0.0.1:19999/nope"}' http://127.0.0.1:$SRV_PORT/api/v1/templates/probe)"
-check "probe TOK 无 token 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" http://127.0.0.1:$TOK_PORT/api/v1/templates/probe)"
+check "probe 非法 URL 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"url":"notaurl"}' http://127.0.0.1:$SRV_PORT/api/v1/rule-sets/probe)"
+check "probe 未监听端口 502" "502" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"url":"http://127.0.0.1:19999/nope"}' http://127.0.0.1:$SRV_PORT/api/v1/rule-sets/probe)"
+check "probe TOK 无 token 401" "401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" http://127.0.0.1:$TOK_PORT/api/v1/rule-sets/probe)"
 # #10a: rules_mixed.yaml 混合均匀（3 DOMAIN / 2 IP-CIDR / 1 GEOIP，各 <60%）→ classical
 PROBE_YAML_BEH=$(python3 -c 'import json;print(json.load(open("'$WORK'/probe_yaml.json"))["behavior"])')
 check "probe yaml behavior=classical" "classical" "$PROBE_YAML_BEH"
 # #10b: TOK 实例带正确 token（本实例 OSC_ADMIN_TOKEN=s3cret）探测 200
-check "probe TOK 带正确 token 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Token: s3cret' -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" http://127.0.0.1:$TOK_PORT/api/v1/templates/probe)"
+check "probe TOK 带正确 token 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'X-Token: s3cret' -d "{\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\"}" http://127.0.0.1:$TOK_PORT/api/v1/rule-sets/probe)"
 
-# 7.8 R3/R4 模板→专属策略组：/sub template_id 单模板/双模板/disabled/非法
+# 7.8 R3/R4 规则集→专属策略组：/sub ruleset_id 单规则集/双规则集/disabled/非法
 TPL1_CODE=$(curl -s -o $WORK/tpl1.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"Netflix\",\"url\":\"http://127.0.0.1:$SRC_PORT/rules_domain.list\",\"behavior\":\"domain\",\"format\":\"text\",\"enabled\":true}" \
-  http://127.0.0.1:$SRV_PORT/api/v1/templates)
-check "创建模板1 Netflix 201" "201" "$TPL1_CODE"
-TPL1=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl1.json"))["template"]["id"])')
+  http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)
+check "创建规则集1 Netflix 201" "201" "$TPL1_CODE"
+TPL1=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl1.json"))["rule_set"]["id"])')
 TPL2_CODE=$(curl -s -o $WORK/tpl2.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d "{\"name\":\"YouTube\",\"url\":\"http://127.0.0.1:$SRC_PORT/rules_mixed.yaml\",\"behavior\":\"classical\",\"format\":\"yaml\",\"enabled\":true}" \
-  http://127.0.0.1:$SRV_PORT/api/v1/templates)
-check "创建模板2 YouTube 201" "201" "$TPL2_CODE"
-TPL2=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl2.json"))["template"]["id"])')
+  http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)
+check "创建规则集2 YouTube 201" "201" "$TPL2_CODE"
+TPL2=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl2.json"))["rule_set"]["id"])')
 
-# 单模板：专属组（7节点+直连+拒绝）+ RULE-SET,Netflix,Netflix 在 MATCH 前 + rule-providers 段
-curl -s -o $WORK/out_tpl1.yaml -w "%{http_code}" "$BASE&template_id=$TPL1" > $WORK/code_tpl1.txt
-check "R3 单模板 /sub 200" "200" "$(cat $WORK/code_tpl1.txt)"
-check "R3 单模板 rule-providers 段" "1" "$(grep -c '^rule-providers:' $WORK/out_tpl1.yaml)"
+# 单规则集：专属组（proxies=手动选择组一致）+ RULE-SET,Netflix,Netflix 在列表最前（GEOIP/MATCH 前）+ rule-providers 段
+curl -s -o $WORK/out_tpl1.yaml -w "%{http_code}" "$BASE&ruleset_id=$TPL1" > $WORK/code_tpl1.txt
+check "R3 单规则集 /sub 200" "200" "$(cat $WORK/code_tpl1.txt)"
+check "R3 单规则集 rule-providers 段" "1" "$(grep -c '^rule-providers:' $WORK/out_tpl1.yaml)"
 check "R3 专属组 Netflix 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl1.yaml | grep -c -- '- name: Netflix')"
-check "R3 专属组 proxies=7节点+直连+拒绝" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl1.yaml Netflix | grep '^extra=' | cut -d= -f2)"
+check "R3 专属组 proxies=手动选择组一致" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl1.yaml Netflix | grep '^extra=' | cut -d= -f2)"
 RS_LN=$(grep -n -- '- RULE-SET,Netflix,Netflix' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
+GEO_LN=$(grep -n -- '- GEOIP,CN,DIRECT' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
 MCH_LN=$(grep -n -- '- MATCH,手动选择' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
-check "R3 RULE-SET,Netflix,Netflix 在 MATCH 前" "1" "$([ -n "$RS_LN" ] && [ -n "$MCH_LN" ] && [ "$RS_LN" -lt "$MCH_LN" ] && echo 1 || echo 0)"
+check "R3 RULE-SET,Netflix,Netflix 在 GEOIP/MATCH 前" "1" "$([ -n "$RS_LN" ] && [ -n "$GEO_LN" ] && [ -n "$MCH_LN" ] && [ "$RS_LN" -lt "$GEO_LN" ] && [ "$RS_LN" -lt "$MCH_LN" ] && echo 1 || echo 0)"
 
-# 双模板（逗号分隔）：两个专属组 + 两条 RULE-SET + rule-providers 2 条
-curl -s -o $WORK/out_tpl2.yaml -w "%{http_code}" "$BASE&template_id=$TPL1,$TPL2" > $WORK/code_tpl2.txt
-check "R4 双模板 /sub 200" "200" "$(cat $WORK/code_tpl2.txt)"
+# 双规则集（逗号分隔）：两个专属组 + 两条 RULE-SET + rule-providers 2 条
+curl -s -o $WORK/out_tpl2.yaml -w "%{http_code}" "$BASE&ruleset_id=$TPL1,$TPL2" > $WORK/code_tpl2.txt
+check "R4 双规则集 /sub 200" "200" "$(cat $WORK/code_tpl2.txt)"
 check "R4 专属组 Netflix 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl2.yaml | grep -c -- '- name: Netflix')"
 check "R4 专属组 YouTube 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl2.yaml | grep -c -- '- name: YouTube')"
 check "R4 rule-providers 2 条" "2" "$(grep -c 'path: ./ruleset/' $WORK/out_tpl2.yaml)"
@@ -342,28 +343,28 @@ check "R4 RULE-SET 2 条" "2" "$(grep -c -- '- RULE-SET,' $WORK/out_tpl2.yaml)"
 check "R4 专属组内容 Netflix" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml Netflix | grep '^extra=' | cut -d= -f2)"
 check "R4 专属组内容 YouTube" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml YouTube | grep '^extra=' | cut -d= -f2)"
 
-# 7.9 修复轮回归：同名模板 400（P1-2）/ 模板名撞内置出站名（P1-1）/
-# 重复 template_id 去重（P2-2）/ 模板名含逗号换行 400（P2-1）
+# 7.9 修复轮回归：同名规则集 400（P1-2）/ 规则集名撞内置出站名（P1-1）/
+# 重复 ruleset_id 去重（P2-2）/ 规则集名含逗号换行 400（P2-1）
 TPL3_CODE=$(curl -s -o $WORK/tpl3.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d '{"name":"Netflix","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text","enabled":true}' \
-  http://127.0.0.1:$SRV_PORT/api/v1/templates)
-check "创建同名模板3 Netflix 201（store 允许同名）" "201" "$TPL3_CODE"
-TPL3=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl3.json"))["template"]["id"])')
-check "P1-2 同名模板 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&template_id=$TPL1,$TPL3")"
+  http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)
+check "创建同名规则集3 Netflix 201（store 允许同名）" "201" "$TPL3_CODE"
+TPL3=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl3.json"))["rule_set"]["id"])')
+check "P1-2 同名规则集 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=$TPL1,$TPL3")"
 TPL4_CODE=$(curl -s -o $WORK/tpl4.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d '{"name":"DIRECT","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text","enabled":true}' \
-  http://127.0.0.1:$SRV_PORT/api/v1/templates)
-check "创建模板4 DIRECT 201" "201" "$TPL4_CODE"
-TPL4=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl4.json"))["template"]["id"])')
-curl -s -o $WORK/out_tpl4.yaml -w "%{http_code}" "$BASE&template_id=$TPL4" > $WORK/code_tpl4.txt
-check "P1-1 模板名撞内置 DIRECT /sub 200" "200" "$(cat $WORK/code_tpl4.txt)"
-check "P1-1 专属组 DIRECT(模板) 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl4.yaml | grep -c -- '- name: DIRECT(模板)')"
-check "P1-1 RULE-SET,DIRECT,DIRECT(模板)" "1" "$(grep -c -- '- RULE-SET,DIRECT,DIRECT(模板)' $WORK/out_tpl4.yaml)"
-curl -s -o $WORK/out_dup.yaml -w "%{http_code}" "$BASE&template_id=$TPL1,$TPL1" > $WORK/code_dup.txt
-check "P2-2 重复 template_id /sub 200" "200" "$(cat $WORK/code_dup.txt)"
+  http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)
+check "创建规则集4 DIRECT 201" "201" "$TPL4_CODE"
+TPL4=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl4.json"))["rule_set"]["id"])')
+curl -s -o $WORK/out_tpl4.yaml -w "%{http_code}" "$BASE&ruleset_id=$TPL4" > $WORK/code_tpl4.txt
+check "P1-1 规则集名撞内置 DIRECT /sub 200" "200" "$(cat $WORK/code_tpl4.txt)"
+check "P1-1 专属组 DIRECT(规则集) 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl4.yaml | grep -c -- '- name: DIRECT(规则集)')"
+check "P1-1 RULE-SET,DIRECT,DIRECT(规则集)" "1" "$(grep -c -- '- RULE-SET,DIRECT,DIRECT(规则集)' $WORK/out_tpl4.yaml)"
+curl -s -o $WORK/out_dup.yaml -w "%{http_code}" "$BASE&ruleset_id=$TPL1,$TPL1" > $WORK/code_dup.txt
+check "P2-2 重复 ruleset_id /sub 200" "200" "$(cat $WORK/code_dup.txt)"
 check "P2-2 重复 id 去重 rule-providers 1 条" "1" "$(grep -c 'path: ./ruleset/' $WORK/out_dup.yaml)"
-check "P2-1 模板名含逗号 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"Netflix,cn","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/templates)"
-check "P2-1 模板名含换行 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"a\nb","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/templates)"
+check "P2-1 规则集名含逗号 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"Netflix,cn","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)"
+check "P2-1 规则集名含换行 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"a\nb","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)"
 
 
 # 7.10 R4 数据源多选聚合：src 逗号多值 / 无效 ID 400 / src+url 混合 /
@@ -399,16 +400,16 @@ check "R4 convert 全空 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X
 MIX_JSON=$(curl -s -X POST -H 'Content-Type: application/json' \
   -d "{\"source_ids\":[\"$SRC_ID\"],\"url\":\"$SUB_URL\"}" http://127.0.0.1:$SRV_PORT/api/v1/convert/preview)
 check "R4 convert source_ids+url 混合 node_count 14" "14" "$(echo "$MIX_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["node_count"])')"
-# disabled / 不存在 / 多值任一非法 → 400；无模板输出无 rule-providers 段（A7）
+# disabled / 不存在 / 多值任一非法 → 400；无规则集输出无 rule-providers 段（A7）
 curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
-  -d '{"enabled":false}' http://127.0.0.1:$SRV_PORT/api/v1/templates/$TPL1 > $WORK/code_dis.txt
-check "禁用模板1 200" "200" "$(cat $WORK/code_dis.txt)"
-check "R4 disabled 模板 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&template_id=$TPL1")"
-check "R4 不存在模板 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&template_id=deadbeef0000")"
-check "R4 多值含非法 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&template_id=$TPL2,deadbeef0000")"
-check "R3 无模板无 rule-providers 段(A7)" "0" "$(grep -c '^rule-providers:' $WORK/out1.yaml)"
+  -d '{"enabled":false}' http://127.0.0.1:$SRV_PORT/api/v1/rule-sets/$TPL1 > $WORK/code_dis.txt
+check "禁用规则集1 200" "200" "$(cat $WORK/code_dis.txt)"
+check "R4 disabled 规则集 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=$TPL1")"
+check "R4 不存在规则集 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=deadbeef0000")"
+check "R4 多值含非法 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=$TPL2,deadbeef0000")"
+check "R3 无规则集无 rule-providers 段(A7)" "0" "$(grep -c '^rule-providers:' $WORK/out1.yaml)"
 
-# 8. mihomo 全量校验产物（无模板 / 单模板 / 双模板）
+# 8. mihomo 全量校验产物（无规则集 / 单规则集 / 双规则集）
 # P2-4: set -e 下校验命令失败会提前退出——先清旧残留再建目录，cleanup trap 兜底，
 # 防止 cmd/validate_tmp 残留 main.go 污染仓库（后续 go build ./... 会当包编译）。
 rm -rf cmd/validate_tmp

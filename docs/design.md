@@ -13,7 +13,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
   → link.ParseSubscription（Base64 订阅 / Clash YAML 订阅 / 单链接）→ []map[string]any (Clash 条目)
   → adapter.ParseProxy 逐条校验（失败跳过+告警日志）→ 规范节点列表
   → transform.Filter + transform.Rename（正则 include/exclude/rename）
-  → groups.Build（手动选择/自动选择/地区组/直连/拒绝组）→ 模板专属组追加（见 5）
+  → groups.Build（手动选择/自动选择/地区组/直连/拒绝组）→ 规则集专属组追加（见 5）
   → template.Merge（内置默认模板 / 外部 config 模板）
   → output.Render（YAML 序列化）
   → config.UnmarshalRawConfig 全量校验（失败则 500）
@@ -37,7 +37,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
 ## 3. HTTP API（兼容 subconverter 调用习惯）
 
 ```
-GET /sub?target=clash&url=<URLENCODE，多源用 | 分隔>&include=<regex>&exclude=<regex>&rename=<regex替换格式>&udp=true&tls13=true&scv=true&strip_emoji=true&template_id=<id1,id2>&config=<模板URL>
+GET /sub?target=clash&url=<URLENCODE，多源用 | 分隔>&include=<regex>&exclude=<regex>&rename=<regex替换格式>&udp=true&tls13=true&scv=true&strip_emoji=true&ruleset_id=<id1,id2>&config=<模板URL>
 GET /healthz           → 200 ok
 GET /version           → JSON {version, mihomo}
 ```
@@ -137,10 +137,10 @@ rules:
 ```
 外部 `config` 参数：支持 subconverter 风格 `.ini` 模板的**最小子集**（`[custom]` 段的 include/exclude/rename 忽略——由 URL 参数控制；仅读取分组/规则部分会复杂化，M1 不做），M1 仅支持 URL 参数方式。`config` 参数在 M1 返回 501 或忽略（设计：忽略 + warn 日志，README 注明 M2 支持）。
 
-规则注入：内置最小规则集（GEOIP,CN,DIRECT + MATCH 兜底）。选中规则模板时注入
-`rule-providers` 段（http 型 provider，path `./ruleset/<模板名>.yaml`）并把
-`RULE-SET,<模板名>,<专属组名>` 插在第一条 MATCH 前；`rule-providers` 为整体覆盖
-段，多模板一次调用全部注入（严禁逐次调用互相覆盖）。
+规则注入：内置最小规则集（GEOIP,CN,DIRECT + MATCH 兜底）。选中规则集时注入
+`rule-providers` 段（http 型 provider，path `./ruleset/<规则集名>.yaml`）并把
+`RULE-SET,<规则集名>,<专属组名>` 插到规则列表**最前**（GEOIP,CN,DIRECT 之前）；
+`rule-providers` 为整体覆盖段，多规则集一次调用全部注入（严禁逐次调用互相覆盖）。
 
 ## 7. 输出校验（internal/output）
 
@@ -261,7 +261,7 @@ api.NewServer（同一 25500 端口）
 - **页面不鉴权**：`/` 与静态资源不进 authMiddleware——页面本身无敏感数据（数据
   全在 `/api/v1/*`），且浏览器导航无法携带令牌头，若页面被挡在 401 后管理台
   将完全不可达（死锁）。API 的 401 由前端 `apiFetch` 弹令牌框兜底。
-- **数据层**：`internal/store` 三组 JSON（sources/logs/templates.json）落盘在
+- **数据层**：`internal/store` 三组 JSON（sources/logs/rulesets.json）落盘在
   `server.data_dir`（默认 `./data`，env `OSC_DATA_DIR` 覆盖）；原子写
   （临时文件 + fsync + rename）+ 写锁，崩溃不产生半成品文件。
 
@@ -275,14 +275,14 @@ api.NewServer（同一 25500 端口）
 | POST | /api/v1/convert/run | 完整转换：返回渲染后 YAML + node_count + 耗时 |
 | GET | /api/v1/logs?limit= | 转换日志（时间倒序，上限 200 条环形） |
 | POST | /api/v1/logs/{id}/retry | 用日志记录源与参数重跑 preview 管线 |
-| GET/POST/PUT/DELETE | /api/v1/templates[/{id}] | 规则模板 CRUD（behavior: domain/ipcidr/classical，format: yaml/text） |
+| GET/POST/PUT/DELETE | /api/v1/rule-sets[/{id}] | 规则集 CRUD（behavior: domain/ipcidr/classical，format: yaml/text） |
 | GET | /api/v1/version | 版本信息（同公开 /version，但需鉴权） |
 
 - convert 请求体：`source_id`/`source_ids`（逗号分隔多值，任一 ID 不存在/禁用
   → 400，两者并存 → 400）与 `url`（临时，可 `|` 多源）可混合聚合（已存源在前、
-  url 源在后）；`include/exclude/rename` 正则、`udp/tls13/scv` 布尔、`template_id`
-  可选（逗号分隔多值，任一模板不存在/禁用 → 400）。规则模板注入 = 把模板 URL
-  写进输出 YAML 的 `rule-providers` 并为每个模板生成专属策略组，规则集由
+  url 源在后）；`include/exclude/rename` 正则、`udp/tls13/scv` 布尔、`ruleset_id`
+  可选（逗号分隔多值，任一规则集不存在/禁用 → 400）。规则集注入 = 把规则集 URL
+  写进输出 YAML 的 `rule-providers` 并为每个规则集生成专属策略组，规则集由
   OpenClash 侧拉取，本服务不拉取不校验规则内容。
 - 日志响应剔除 `url_full`（完整临时 URL 仅内部 retry 使用，永不外泄）。
 
@@ -294,8 +294,8 @@ api.NewServer（同一 25500 端口）
    新增/编辑共用内联表单，编辑时 URL 留空表示不变（列表只回脱敏 URL）；
    启用开关 change 即 PUT。
 2. **订阅转换**：已启用源下拉（或「临时 URL」折叠展开时禁用下拉）；
-   include/exclude/rename + scv/udp/tls13 + 模板多选 checkbox（仅 enabled，
-   勾选结果 `join(',')` 赋 `template_id`）；「预览节点」渲染节点/
+   include/exclude/rename + scv/udp/tls13 + 规则集多选 checkbox（仅 enabled，
+   勾选结果 `join(',')` 赋 `ruleset_id`）；「预览节点」渲染节点/
    策略组滚动区与耗时；「生成订阅链接」用 `window.location.protocol` +
    `window.location.host` 拼 `/sub?target=clash&src=<id>|url=<enc>`（url 只经
    URLSearchParams 单次编码，绝不预编码，否则服务端解码后仍带 %XX → 400）
@@ -303,7 +303,7 @@ api.NewServer（同一 25500 端口）
    「查看完整 YAML」输出 textarea + 复制。
 3. **转换日志**：时间/来源/参数摘要（include/exclude/rename 有值才显示）/
    状态/错误消息/节点数/耗时；失败行红色 +「重试」（POST retry 成功即刷新）。
-4. **规则模板**：表格 + CRUD 表单（behavior/format 下拉），说明文字注明
+4. **规则集**：表格 + CRUD 表单（behavior/format 下拉），说明文字注明
    「OpenClash 侧拉取规则集，本服务仅注入 URL 到输出 YAML 的 rule-providers」。
 5. **认证**：令牌输入/清除；所有请求走统一 `apiFetch`：localStorage
    `osc_token` → `X-Token` 头；收到 401 弹令牌输入框，保存后自动重试原请求
@@ -311,21 +311,26 @@ api.NewServer（同一 25500 端口）
 
 ## M3-4 数据文件
 
-`<data_dir>/{sources,logs,templates}.json`，格式 `{"version":1,"<name>":[...]}`；
+`<data_dir>/{sources,logs,rulesets}.json`，格式 `{"version":1,"<name>":[...]}`；
 version 不匹配视为空态（warn），损坏文件备份为 `.json.bak` 后以空态继续——
 均不崩溃。Docker 部署时 `./data:/app/data` 挂载持久化。
 
-### 预置模板（首次启动种子）
+### 预置规则集（首次启动种子）
 
-`templates.json` 不存在时（首次启动），自动种入 8 个 ACL4SSR 常用规则模板：
+`rulesets.json` 不存在时（首次启动，旧版 `templates.json` 也不存在时），
+自动种入 8 个 ACL4SSR 常用规则集：
 广告拦截（BanAD.list）、Netflix、YouTube、Telegram、Google、Twitter、Apple、
 Microsoft（Ruleset/ 系列），URL 指向 ACL4SSR 官方 Clash 规则集
 （`https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/`），
 统一 behavior=domain、format=text、默认禁用（Enabled=false），ID 与落盘
-复用普通模板创建逻辑（crypto/rand 12 hex + 原子写 0600）。种入后即为
-**普通模板**：可编辑、可删除、可改名，无任何特殊标记。仅当文件不存在时
+复用普通规则集创建逻辑（crypto/rand 12 hex + 原子写 0600）。种入后即为
+**普通规则集**：可编辑、可删除、可改名，无任何特殊标记。仅当文件不存在时
 种入——文件已存在（哪怕空列表）、损坏恢复空态、version 不匹配空态均不
 触发，用户删光预置后重启不会复活。
+
+旧版 `templates.json`（`{"version":1,"templates":[...]}`）存在而 `rulesets.json`
+不存在时：启动读取旧文件迁移为内存态（warn 提示），不主动改写旧文件；
+首次写操作落盘为 `rulesets.json`，旧文件保留不动。
 
 ## M3-5 认证
 

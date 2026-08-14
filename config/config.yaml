@@ -4,7 +4,7 @@
 
 server:
   port: 25500          # HTTP 监听端口
-  data_dir: ./data     # 管理台数据持久化目录（订阅源/转换日志/规则模板 JSON），
+  data_dir: ./data     # 管理台数据持久化目录（订阅源/转换日志/规则集 JSON），
                        # 可用环境变量 OSC_DATA_DIR 覆盖
 
 fetcher:

@@ -9,7 +9,7 @@ import (
 // RuleProvider 描述一个待注入的 mihomo rule-provider。
 // Behavior 取值：domain | ipcidr | classical；Format 取值：yaml | text。
 // TargetGroup 是 RULE-SET 行的目标策略组名；空串 = 默认「手动选择」
-// （R3：模板专属组场景每个 rp 显式指定自己的专属组）。
+// （R3：规则集专属组场景每个 rp 显式指定自己的专属组）。
 type RuleProvider struct {
 	Name        string
 	URL         string
@@ -28,7 +28,7 @@ const defaultTargetGroup = "手动选择"
 // 或 .. 的路径穿越名称（名称会拼进输出 YAML 的 rule-provider path，
 // 如 ./ruleset/<Name>.yaml）。
 //
-// 导出让 API/store 层在创建/更新规则模板前校验（400），避免路径穿越
+// 导出让 API/store 层在创建/更新规则集前校验（400），避免路径穿越
 // 拖到转换管线里才报错（500）。
 func ValidateRuleProviderName(name string) error {
 	if name == "" {
@@ -39,7 +39,7 @@ func ValidateRuleProviderName(name string) error {
 	}
 	// P2-1：逗号会把 RULE-SET 规则行拆成 4 段（mihomo 语义层拒绝），换行/回车/
 	// 控制字符会破坏 YAML 行结构（规则行换行）——两者都会让 output.Validate 语法层
-	// 放行而 mihomo 加载失败，必须在创建/更新模板时拦截（400）。
+	// 放行而 mihomo 加载失败，必须在创建/更新规则集时拦截（400）。
 	if strings.ContainsAny(name, ",\n\r") || hasControlChar(name) {
 		return errors.New("rule provider name 不能包含逗号/换行等特殊字符")
 	}
@@ -57,12 +57,13 @@ func hasControlChar(s string) bool {
 }
 
 // ApplyRuleProviders 将 rule-providers 段注入 Build 返回的完整配置 map，并在
-// cfg["rules"]（[]any，元素为 string）的 MATCH 行之前按 rps 顺序插入
-// RULE-SET,<rp.Name>,<rp.TargetGroup>；没有 MATCH 行则追加到末尾。
+// cfg["rules"]（[]any，元素为 string）的最前面按 rps 顺序插入
+// RULE-SET,<rp.Name>,<rp.TargetGroup>（位于 GEOIP,CN,DIRECT 之前，保证规则集
+// 流量优先匹配，不被国内直连规则先行截断）。
 //
 //   - rps 为空 → 直接返回 nil（no-op，cfg 原样）。
 //   - 每个 rp 的 TargetGroup 为空串时用默认值「手动选择」。
-//   - cfg["rule-providers"] 是整体覆盖：多模板场景必须一次调用传全部 rp，
+//   - cfg["rule-providers"] 是整体覆盖：多规则集场景必须一次调用传全部 rp，
 //     严禁逐次调用（后一次会覆盖前一次注入的段）。
 //   - 每个 rp 生成一个 http 型 rule-provider entry：
 //     {"type":"http","url":...,"behavior":...,"format":...,"interval":86400,
@@ -111,32 +112,13 @@ func ApplyRuleProviders(cfg map[string]any, rps []RuleProvider) error {
 		return fmt.Errorf("cfg[\"rules\"] 类型必须为 []any，实际为 %T", rulesAny)
 	}
 
-	// 在第一条 MATCH 行之前插入；无 MATCH 则追加到末尾
-	inserted := false
+	// RULE-SET 统一插到规则列表最前面（在 GEOIP,CN,DIRECT 之前），
+	// 多条保持 rps 顺序；无 MATCH 行同样插最前。
 	out := make([]any, 0, len(rules)+len(ruleSets))
-	for _, r := range rules {
-		if !inserted {
-			if line, isStr := r.(string); isStr && isMatchRule(line) {
-				for _, rs := range ruleSets {
-					out = append(out, rs)
-				}
-				inserted = true
-			}
-		}
-		out = append(out, r)
-	}
-	if !inserted {
-		for _, rs := range ruleSets {
-			out = append(out, rs)
-		}
-	}
+	out = append(out, ruleSets...)
+	out = append(out, rules...)
 	cfg["rules"] = out
 	return nil
-}
-
-// isMatchRule 判断规则行是否为 MATCH 兜底规则（MATCH,<策略组> 形式）。
-func isMatchRule(line string) bool {
-	return strings.HasPrefix(line, "MATCH,")
 }
 
 // validateRuleProvider 校验单个 rule-provider 注入参数：

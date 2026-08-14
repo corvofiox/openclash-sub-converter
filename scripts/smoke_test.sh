@@ -160,10 +160,12 @@ print('reject=%d' % (1 if by_name.get('拒绝') == ['REJECT'] else 0))
 print('manual_order=%d' % (1 if by_name.get('手动选择') == expect_manual else 0))
 print('manual_count=%d' % (1 if len(by_name.get('手动选择', [])) == len(expect_manual) else 0))
 print('group_count=%d' % (1 if len(order) == 4 + len(region_names) + (1 if other else 0) else 0))
-# R3：附加组名检查（argv[2]）——专属组 proxies = 深拷贝「手动选择」组
+# R3：附加组名检查（argv[2]）——专属组 proxies = [手动选择, ...手动选择组 proxies]
 if len(sys.argv) > 2:
     extra = sys.argv[2]
-    print('extra=%d' % (1 if by_name.get(extra) == by_name.get('手动选择') else 0))
+    e = by_name.get(extra) or []
+    m = by_name.get('手动选择') or []
+    print('extra=%d' % (1 if len(e) == len(m)+1 and e[:1] == ['手动选择'] and e[1:] == m else 0))
 PYEOF
 GCHK=$(python3 $WORK/check_groups.py $WORK/out1.yaml)
 check "R1 直连组存在且 proxies=[DIRECT]" "1" "$(echo "$GCHK" | grep '^direct=' | cut -d= -f2)"
@@ -322,12 +324,12 @@ TPL2_CODE=$(curl -s -o $WORK/tpl2.json -w '%{http_code}' -X POST -H 'Content-Typ
 check "创建规则集2 YouTube 201" "201" "$TPL2_CODE"
 TPL2=$(python3 -c 'import json;print(json.load(open("'$WORK'/tpl2.json"))["rule_set"]["id"])')
 
-# 单规则集：专属组（proxies=手动选择组一致）+ RULE-SET,Netflix,Netflix 在列表最前（GEOIP/MATCH 前）+ rule-providers 段
+# 单规则集：专属组（proxies=[手动选择,...手动选择组]）+ RULE-SET,Netflix,Netflix 在列表最前（GEOIP/MATCH 前）+ rule-providers 段
 curl -s -o $WORK/out_tpl1.yaml -w "%{http_code}" "$BASE&ruleset_id=$TPL1" > $WORK/code_tpl1.txt
 check "R3 单规则集 /sub 200" "200" "$(cat $WORK/code_tpl1.txt)"
 check "R3 单规则集 rule-providers 段" "1" "$(grep -c '^rule-providers:' $WORK/out_tpl1.yaml)"
 check "R3 专属组 Netflix 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl1.yaml | grep -c -- '- name: Netflix')"
-check "R3 专属组 proxies=手动选择组一致" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl1.yaml Netflix | grep '^extra=' | cut -d= -f2)"
+check "R3 专属组 proxies=[手动选择,...手动组]" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl1.yaml Netflix | grep '^extra=' | cut -d= -f2)"
 RS_LN=$(grep -n -- '- RULE-SET,Netflix,Netflix' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
 GEO_LN=$(grep -n -- '- GEOIP,CN,DIRECT' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
 MCH_LN=$(grep -n -- '- MATCH,手动选择' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
@@ -340,8 +342,8 @@ check "R4 专属组 Netflix 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-
 check "R4 专属组 YouTube 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl2.yaml | grep -c -- '- name: YouTube')"
 check "R4 rule-providers 2 条" "2" "$(grep -c 'path: ./ruleset/' $WORK/out_tpl2.yaml)"
 check "R4 RULE-SET 2 条" "2" "$(grep -c -- '- RULE-SET,' $WORK/out_tpl2.yaml)"
-check "R4 专属组内容 Netflix" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml Netflix | grep '^extra=' | cut -d= -f2)"
-check "R4 专属组内容 YouTube" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml YouTube | grep '^extra=' | cut -d= -f2)"
+check "R4 专属组 proxies=[手动选择,...手动组] Netflix" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml Netflix | grep '^extra=' | cut -d= -f2)"
+check "R4 专属组 proxies=[手动选择,...手动组] YouTube" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml YouTube | grep '^extra=' | cut -d= -f2)"
 
 # 7.9 修复轮回归：同名规则集 400（P1-2）/ 规则集名撞内置出站名（P1-1）/
 # 重复 ruleset_id 去重（P2-2）/ 规则集名含逗号换行 400（P2-1）

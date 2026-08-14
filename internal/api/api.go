@@ -194,8 +194,9 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 	transform.ApplyStripEmoji(nodes, groupsList, filter.StripEmoji)
 	// R3 规则集专属策略组：必须先于 template.Build 追加到 groupsList（Build 会
 	// 把组列表固化进 cfgMap["proxy-groups"]，事后 append 不生效）。
-	// 组 = select，proxies 复制「手动选择」组（groupsList[0]）的 proxies（含
-	// 自动选择/地区组/其他节点/直连/拒绝等组引用，深拷贝避免共享底层数组）；
+	// 组 = select，proxies = [手动选择, ...手动选择组 proxies]：首位引用「手动
+	// 选择」组（用户可在专属组内跟随手动选择），其后为「手动选择」组 proxies 的
+	// 深拷贝（自动选择/地区组/其他节点/直连/拒绝等组引用，避免共享底层数组）；
 	// 组名与已有组（手动选择/自动选择/地区组/其他节点/直连/拒绝/已加规则集组）
 	// 冲突时加「(规则集)」后缀递增。RULE-SET,<规则集名>,<最终组名> 行在
 	// cfgMap 构建后由 ApplyRuleProviders 一次性注入（cfg["rule-providers"]
@@ -233,19 +234,21 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 		for _, rs := range ruleSets {
 			gname := uniqueRuleSetGroupName(rs.Name, usedNames)
 			usedNames[gname] = true
-			// 专属组 proxies = 深拷贝「手动选择」组（groupsList[0]，Build 保证
-			// 首元素是手动选择组）的 proxies：成员构成与手动组一致，用户可在
-			// 专属组内直接引用自动选择/地区组/直连/拒绝等。复制在 ApplyStripEmoji
+			// 专属组 proxies = [手动选择, ...手动选择组 proxies]：首位引用「手动
+			// 选择」组（groupsList[0]，Build 保证首元素是手动选择组），用户可在
+			// 专属组内跟随手动选择；其后复制手动组 proxies（自动选择/地区组/
+			// 直连/拒绝等组引用，深拷贝避免共享底层数组）。复制在 ApplyStripEmoji
 			// 之后，节点名已是最终名。
 			var proxies []any
 			if len(groupsList) > 0 {
 				if src, ok := groupsList[0]["proxies"].([]any); ok {
-					proxies = append([]any(nil), src...)
+					proxies = append([]any{groups.GroupManual}, src...)
 				}
 			}
 			if proxies == nil {
-				// 防御性回退：groupsList 为空或缺 proxies → 全节点名 + 直连 + 拒绝
-				proxies = make([]any, 0, len(nodes)+2)
+				// 防御性回退：groupsList 为空或缺 proxies → 手动选择 + 全节点名 + 直连 + 拒绝
+				proxies = make([]any, 0, len(nodes)+3)
+				proxies = append(proxies, groups.GroupManual)
 				for _, n := range nodes {
 					proxies = append(proxies, n["name"])
 				}

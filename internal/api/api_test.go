@@ -709,7 +709,7 @@ func findRuleSetIndex(rules []any, line string) int {
 }
 
 // TestSubRuleSetSingle（R3 验收 A3）：/sub?ruleset_id=<id> 单规则集——
-// rule-providers 含该规则集、专属策略组（select，proxies 与「手动选择」组一致）、
+// rule-providers 含该规则集、专属策略组（select，proxies=[手动选择,...手动选择组]）、
 // RULE-SET,<规则集名>,<规则集名> 在规则列表最前（GEOIP 之前）。
 func TestSubRuleSetSingle(t *testing.T) {
 	h := newTestServer(t)
@@ -735,11 +735,13 @@ func TestSubRuleSetSingle(t *testing.T) {
 	if ng["type"] != "select" {
 		t.Errorf("Netflix group type = %v, want select", ng["type"])
 	}
-	// 改动 2：专属组 proxies = 深拷贝「手动选择」组的 proxies（含自动选择/地区组/
-	// 其他节点/直连/拒绝等组引用），而非仅全节点名 + 直连 + 拒绝
+	// 改动 2：专属组 proxies = [手动选择, ...手动选择组 proxies]：首位引用「手动
+	// 选择」组（用户可在专属组内跟随手动选择），其后为手动组 proxies 的深拷贝
 	manual := findGroupByName(t, groups, "手动选择")
-	if !reflect.DeepEqual(ng["proxies"], manual["proxies"]) {
-		t.Errorf("Netflix proxies = %v, want 与手动选择组一致 %v", ng["proxies"], manual["proxies"])
+	mp := manual["proxies"].([]any)
+	np := ng["proxies"].([]any)
+	if len(np) != len(mp)+1 || np[0] != "手动选择" || !reflect.DeepEqual(np[1:], mp) {
+		t.Errorf("Netflix proxies = %v, want [手动选择]+手动选择组一致 %v", np, mp)
 	}
 	rules, _ := cfg["rules"].([]any)
 	rsIdx := findRuleSetIndex(rules, "RULE-SET,Netflix,Netflix")
@@ -776,10 +778,16 @@ func TestSubRuleSetMulti(t *testing.T) {
 		}
 	}
 	groups, _ := cfg["proxy-groups"].([]any)
+	manual := findGroupByName(t, groups, "手动选择")
+	mp := manual["proxies"].([]any)
 	for _, name := range []string{"Netflix", "YouTube"} {
 		g := findGroupByName(t, groups, name)
 		if g["type"] != "select" {
 			t.Errorf("%s group type = %v, want select", name, g["type"])
+		}
+		// P3：专属组 proxies 首位引用「手动选择」组，其后与手动组 proxies 一致
+		if gp, ok := g["proxies"].([]any); !ok || len(gp) != len(mp)+1 || gp[0] != "手动选择" || !reflect.DeepEqual(gp[1:], mp) {
+			t.Errorf("%s proxies = %v, want [手动选择]+手动选择组一致 %v", name, g["proxies"], mp)
 		}
 	}
 	rules, _ := cfg["rules"].([]any)
@@ -917,11 +925,13 @@ func TestSubRuleSetNameConflictsNode(t *testing.T) {
 		t.Fatalf("response is not valid yaml: %v", err)
 	}
 	groups, _ := cfg["proxy-groups"].([]any)
-	// 撞节点名 → 后缀；专属组 proxies = 深拷贝「手动选择」组（含组引用，不受影响）
+	// 撞节点名 → 后缀；专属组 proxies = [手动选择, ...手动选择组]（含组引用，不受影响）
 	ng := findGroupByName(t, groups, "Netflix(规则集)")
 	manual := findGroupByName(t, groups, "手动选择")
-	if !reflect.DeepEqual(ng["proxies"], manual["proxies"]) {
-		t.Errorf("Netflix(规则集) proxies = %v, want 与手动选择组一致 %v", ng["proxies"], manual["proxies"])
+	mp := manual["proxies"].([]any)
+	np := ng["proxies"].([]any)
+	if len(np) != len(mp)+1 || np[0] != "手动选择" || !reflect.DeepEqual(np[1:], mp) {
+		t.Errorf("Netflix(规则集) proxies = %v, want [手动选择]+手动选择组一致 %v", np, mp)
 	}
 	// 撞内置出站名 DIRECT → 后缀
 	findGroupByName(t, groups, "DIRECT(规则集)")

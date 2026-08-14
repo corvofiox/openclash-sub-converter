@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	version = "0.3.0"
+	version = "0.3.1"
 	mihomo  = "v1.19.29"
 )
 
@@ -43,7 +43,7 @@ type server struct {
 // NewServer 构建 HTTP 路由：
 //
 //	GET /healthz → 200 "ok"
-//	GET /version → JSON {"version":"0.3.0","mihomo":"v1.19.29"}
+//	GET /version → JSON {"version":"0.3.1","mihomo":"v1.19.29"}
 //	GET /sub     → 订阅转换（见 handleSub 注释）
 //
 // st 非 nil 时额外挂载管理台 REST API（/api/v1/*，全部经 authMiddleware

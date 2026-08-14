@@ -694,8 +694,8 @@ func TestAdminVersion(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
 		t.Fatalf("invalid json: %v", err)
 	}
-	if v.Version != "0.3.0" || v.Mihomo != "v1.19.29" {
-		t.Errorf("version payload = %+v, want {0.3.0 v1.19.29}", v)
+	if v.Version != "0.3.1" || v.Mihomo != "v1.19.29" {
+		t.Errorf("version payload = %+v, want {0.3.1 v1.19.29}", v)
 	}
 }
 

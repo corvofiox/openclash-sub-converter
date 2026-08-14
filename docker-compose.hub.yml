@@ -2,7 +2,7 @@ name: openclash-sub-converter
 
 services:
   openclash-sub-converter:
-    image: corvofiox/openclash-sub-converter:0.2.0
+    image: corvofiox/openclash-sub-converter:0.3.0
     container_name: openclash-sub-converter
     restart: unless-stopped
     ports:

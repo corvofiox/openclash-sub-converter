@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	version = "0.1.0"
+	version = "0.3.0"
 	mihomo  = "v1.19.29"
 )
 

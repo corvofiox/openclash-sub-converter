@@ -223,11 +223,21 @@ func TestSubSuccess(t *testing.T) {
 	}
 	// 规则注入
 	rules, ok := cfg["rules"].([]any)
-	if !ok || len(rules) != 2 {
-		t.Fatalf("rules = %T %v, want 2 entries", cfg["rules"], cfg["rules"])
+	if !ok || len(rules) != 3 {
+		t.Fatalf("rules = %T %v, want 3 entries（含内置 gfw）", cfg["rules"], cfg["rules"])
 	}
-	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,手动选择" {
-		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,手动选择]", rules)
+	if rules[0] != "RULE-SET,gfw,手动选择" || rules[1] != "GEOIP,CN,DIRECT" || rules[2] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [RULE-SET,gfw,手动选择 GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
+	}
+	// A1：rule-providers.gfw 字段契约（url/behavior/format/interval）
+	rps2, _ := cfg["rule-providers"].(map[string]any)
+	gfwEntry, ok := rps2["gfw"].(map[string]any)
+	if !ok {
+		t.Fatalf("rule-providers 缺内置 gfw，实际 %v", rps2)
+	}
+	if gfwEntry["url"] != "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt" ||
+		gfwEntry["behavior"] != "domain" || gfwEntry["format"] != "yaml" || gfwEntry["interval"] != 86400 {
+		t.Errorf("gfw entry = %v", gfwEntry)
 	}
 }
 
@@ -448,8 +458,8 @@ func TestSubErrorDoesNotLeakCredentials(t *testing.T) {
 }
 
 // TestSubStripEmoji 断言 strip_emoji=true：节点名剥离旗标 emoji（识别仍基于
-// 原始名→组名不变且无 emoji）、组 proxies 引用与 proxies 段一致、rules[1]
-// 仍为 MATCH,手动选择。
+// 原始名→组名不变且无 emoji）、组 proxies 引用与 proxies 段一致、内置 gfw
+// 规则注入 + MATCH 兜底指向漏网之鱼。
 func TestSubStripEmoji(t *testing.T) {
 	h := newTestServer(t)
 	src := fakeSource(t, http.StatusOK, subBody())
@@ -520,13 +530,13 @@ func TestSubStripEmoji(t *testing.T) {
 		}
 	}
 
-	// rules 兜底仍指向无 emoji 的手动选择
+	// rules：内置 gfw 规则集 → GEOIP,CN,DIRECT → MATCH 兜底指向漏网之鱼
 	rules, ok := cfg["rules"].([]any)
-	if !ok || len(rules) != 2 {
-		t.Fatalf("rules = %T %v, want 2 entries", cfg["rules"], cfg["rules"])
+	if !ok || len(rules) != 3 {
+		t.Fatalf("rules = %T %v, want 3 entries（含内置 gfw）", cfg["rules"], cfg["rules"])
 	}
-	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,手动选择" {
-		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,手动选择]", rules)
+	if rules[0] != "RULE-SET,gfw,手动选择" || rules[1] != "GEOIP,CN,DIRECT" || rules[2] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [RULE-SET,gfw,手动选择 GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
 	}
 }
 
@@ -724,11 +734,14 @@ func TestSubRuleSetSingle(t *testing.T) {
 		t.Fatalf("response is not valid yaml: %v", err)
 	}
 	rps, ok := cfg["rule-providers"].(map[string]any)
-	if !ok || len(rps) != 1 {
-		t.Fatalf("rule-providers = %T %v, want 1 entry", cfg["rule-providers"], cfg["rule-providers"])
+	if !ok || len(rps) != 2 {
+		t.Fatalf("rule-providers = %T %v, want 2 entries（规则集 + 内置 gfw）", cfg["rule-providers"], cfg["rule-providers"])
 	}
 	if _, ok := rps["Netflix"]; !ok {
 		t.Errorf("rule-providers 缺 Netflix，实际 %v", rps)
+	}
+	if _, ok := rps["gfw"]; !ok {
+		t.Errorf("rule-providers 缺内置 gfw，实际 %v", rps)
 	}
 	groups, _ := cfg["proxy-groups"].([]any)
 	ng := findGroupByName(t, groups, "Netflix")
@@ -746,7 +759,7 @@ func TestSubRuleSetSingle(t *testing.T) {
 	rules, _ := cfg["rules"].([]any)
 	rsIdx := findRuleSetIndex(rules, "RULE-SET,Netflix,Netflix")
 	geoipIdx := findRuleSetIndex(rules, "GEOIP,CN,DIRECT")
-	matchIdx := findRuleSetIndex(rules, "MATCH,手动选择")
+	matchIdx := findRuleSetIndex(rules, "MATCH,漏网之鱼")
 	if rsIdx < 0 || geoipIdx < 0 || matchIdx < 0 || rsIdx > geoipIdx || rsIdx > matchIdx {
 		t.Errorf("rules = %v, want RULE-SET,Netflix,Netflix 在列表最前（GEOIP 之前）", rules)
 	}
@@ -769,10 +782,10 @@ func TestSubRuleSetMulti(t *testing.T) {
 		t.Fatalf("response is not valid yaml: %v", err)
 	}
 	rps, ok := cfg["rule-providers"].(map[string]any)
-	if !ok || len(rps) != 2 {
-		t.Fatalf("rule-providers = %T %v, want 2 entries", cfg["rule-providers"], cfg["rule-providers"])
+	if !ok || len(rps) != 3 {
+		t.Fatalf("rule-providers = %T %v, want 3 entries（双规则集 + 内置 gfw）", cfg["rule-providers"], cfg["rule-providers"])
 	}
-	for _, name := range []string{"Netflix", "YouTube"} {
+	for _, name := range []string{"Netflix", "YouTube", "gfw"} {
 		if _, ok := rps[name]; !ok {
 			t.Errorf("rule-providers 缺 %s", name)
 		}
@@ -792,7 +805,7 @@ func TestSubRuleSetMulti(t *testing.T) {
 	}
 	rules, _ := cfg["rules"].([]any)
 	geoipIdx := findRuleSetIndex(rules, "GEOIP,CN,DIRECT")
-	matchIdx := findRuleSetIndex(rules, "MATCH,手动选择")
+	matchIdx := findRuleSetIndex(rules, "MATCH,漏网之鱼")
 	for _, line := range []string{"RULE-SET,Netflix,Netflix", "RULE-SET,YouTube,YouTube"} {
 		idx := findRuleSetIndex(rules, line)
 		if idx < 0 || idx > geoipIdx || idx > matchIdx {
@@ -937,7 +950,7 @@ func TestSubRuleSetNameConflictsNode(t *testing.T) {
 	findGroupByName(t, groups, "DIRECT(规则集)")
 	rules, _ := cfg["rules"].([]any)
 	geoipIdx := findRuleSetIndex(rules, "GEOIP,CN,DIRECT")
-	matchIdx := findRuleSetIndex(rules, "MATCH,手动选择")
+	matchIdx := findRuleSetIndex(rules, "MATCH,漏网之鱼")
 	for _, line := range []string{"RULE-SET,Netflix,Netflix(规则集)", "RULE-SET,DIRECT,DIRECT(规则集)"} {
 		idx := findRuleSetIndex(rules, line)
 		if idx < 0 || idx > geoipIdx || idx > matchIdx {
@@ -962,8 +975,11 @@ func TestSubRuleSetDedupID(t *testing.T) {
 		t.Fatalf("response is not valid yaml: %v", err)
 	}
 	rps, ok := cfg["rule-providers"].(map[string]any)
-	if !ok || len(rps) != 1 {
-		t.Errorf("rule-providers = %T %v, want 1 entry（重复 id 去重）", cfg["rule-providers"], cfg["rule-providers"])
+	if !ok || len(rps) != 2 {
+		t.Errorf("rule-providers = %T %v, want 2 entries（重复 id 去重 + 内置 gfw）", cfg["rule-providers"], cfg["rule-providers"])
+	}
+	if _, ok := rps["gfw"]; !ok {
+		t.Errorf("rule-providers 缺内置 gfw，实际 %v", rps)
 	}
 	groups, _ := cfg["proxy-groups"].([]any)
 	if n := countGroupNames(groups, "Netflix"); n != 1 {
@@ -1021,8 +1037,11 @@ func TestConvertRuleSetMulti(t *testing.T) {
 		t.Fatalf("yaml field not valid: %v", err)
 	}
 	rps, _ := cfg["rule-providers"].(map[string]any)
-	if len(rps) != 2 {
-		t.Errorf("rule-providers len = %d, want 2", len(rps))
+	if len(rps) != 3 {
+		t.Errorf("rule-providers len = %d, want 3（双规则集 + 内置 gfw）", len(rps))
+	}
+	if _, ok := rps["gfw"]; !ok {
+		t.Errorf("rule-providers 缺内置 gfw，实际 %v", rps)
 	}
 	groups, _ := cfg["proxy-groups"].([]any)
 	findGroupByName(t, groups, "Netflix")
@@ -1499,5 +1518,205 @@ func TestLogRetryDuplicateSourceID(t *testing.T) {
 	latest := st.ListLogs(10)[0]
 	if latest.SourceID != dupIDs {
 		t.Errorf("retry log SourceID = %q, want %q（原样保留）", latest.SourceID, dupIDs)
+	}
+}
+
+// ---------- R7：内置 GFW 规则集 + 漏网之鱼兜底 ----------
+
+// TestSubGFWDefault（R7 A1/A2/A5）：缺省与显式 gfw=true 均注入内置 gfw
+// （rule-providers.gfw 字段契约 + RULE-SET,gfw,手动选择 在 GEOIP 之前），
+// MATCH 兜底指向「漏网之鱼」；gfw=false 无 gfw 注入但兜底不变。
+func TestSubGFWDefault(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	for _, extra := range []map[string]string{nil, {"gfw": "true"}} {
+		rec := do(h, subQuery(src.URL, extra))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		var cfg map[string]any
+		if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+			t.Fatalf("not valid yaml: %v", err)
+		}
+		rps, ok := cfg["rule-providers"].(map[string]any)
+		if !ok || len(rps) != 1 {
+			t.Fatalf("rule-providers = %T %v, want 1 entry（内置 gfw）", cfg["rule-providers"], cfg["rule-providers"])
+		}
+		g := rps["gfw"].(map[string]any)
+		if g["type"] != "http" || g["url"] != "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt" ||
+			g["behavior"] != "domain" || g["format"] != "yaml" || g["interval"] != 86400 || g["path"] != "./ruleset/gfw.yaml" {
+			t.Errorf("gfw provider entry = %v", g)
+		}
+		rules, _ := cfg["rules"].([]any)
+		geoipIdx := findRuleSetIndex(rules, "GEOIP,CN,DIRECT")
+		gfwIdx := findRuleSetIndex(rules, "RULE-SET,gfw,手动选择")
+		matchIdx := findRuleSetIndex(rules, "MATCH,漏网之鱼")
+		if gfwIdx < 0 || gfwIdx > geoipIdx || gfwIdx > matchIdx || matchIdx < geoipIdx {
+			t.Errorf("rules = %v, want gfw 在 GEOIP 前、MATCH,漏网之鱼 最后", rules)
+		}
+	}
+}
+
+// TestSubGFWOff（R7 A5）：gfw=false（/sub query）不注入 gfw——无 rule-providers
+// 段、无 RULE-SET,gfw 行；规则列表回到 [GEOIP,CN,DIRECT, MATCH,漏网之鱼]。
+func TestSubGFWOff(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	rec := do(h, subQuery(src.URL, map[string]string{"gfw": "false"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("not valid yaml: %v", err)
+	}
+	if _, ok := cfg["rule-providers"]; ok {
+		t.Errorf("gfw=false 不应有 rule-providers 段：%v", cfg["rule-providers"])
+	}
+	rules, _ := cfg["rules"].([]any)
+	if len(rules) != 2 || rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
+	}
+}
+
+// TestSubGFWNameConflict（R7 A6）：用户自建规则集名为 gfw 且默认注入内置 GFW
+// → 400「规则集名称冲突」（不静默覆盖）；gfw=false 时用户自己的 gfw 规则集可正常使用。
+func TestSubGFWNameConflict(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	tpl := createRuleSetViaAPI(t, h, "gfw", "https://x.example.com/gfw.yaml", "domain", "yaml")
+	rec := do(h, subQuery(src.URL, map[string]string{"ruleset_id": tpl["id"].(string)}))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "规则集名称冲突") || !strings.Contains(rec.Body.String(), "内置 GFW") {
+		t.Errorf("status = %d body=%s, want 400 规则集名称冲突（与内置 GFW 同级）", rec.Code, rec.Body.String())
+	}
+	// gfw=false 关闭内置 → 用户规则集正常注入
+	rec = do(h, subQuery(src.URL, map[string]string{"ruleset_id": tpl["id"].(string), "gfw": "false"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gfw=false 时应 200，实际 %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("not valid yaml: %v", err)
+	}
+	rps, _ := cfg["rule-providers"].(map[string]any)
+	if len(rps) != 1 {
+		t.Errorf("rule-providers = %v, want 1 entry（用户 gfw 规则集）", rps)
+	}
+}
+
+// TestConvertGFWOff（R7 A5/A7 JSON 路径）：convert/run 缺省输出含 gfw；
+// gfw:false 无 rule-providers 与 RULE-SET,gfw；preview 不受影响（200）。
+func TestConvertGFWOff(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	// 缺省 = 内置 gfw 注入
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q}`, src.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default run: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var def struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &def); err != nil {
+		t.Fatalf("run body not json: %v", err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal([]byte(def.YAML), &cfg); err != nil {
+		t.Fatalf("yaml not valid: %v", err)
+	}
+	if _, ok := cfg["rule-providers"].(map[string]any)["gfw"]; !ok {
+		t.Errorf("default convert/run 应含内置 gfw: %v", cfg["rule-providers"])
+	}
+	// gfw:false → 无 gfw
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/run", fmt.Sprintf(`{"url":%q,"gfw":false}`, src.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gfw=false run: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	def.YAML = ""
+	if err := json.Unmarshal(rec.Body.Bytes(), &def); err != nil {
+		t.Fatalf("run body not json: %v", err)
+	}
+	cfg = map[string]any{}
+	if err := yaml.Unmarshal([]byte(def.YAML), &cfg); err != nil {
+		t.Fatalf("yaml not valid: %v", err)
+	}
+	if _, ok := cfg["rule-providers"]; ok {
+		t.Errorf("gfw=false 不应有 rule-providers: %v", cfg["rule-providers"])
+	}
+	if rules, _ := cfg["rules"].([]any); len(rules) != 2 || rules[1] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [GEOIP MATCH,漏网之鱼]", cfg["rules"])
+	}
+	// preview 带 gfw:false 200（开关不影响 preview 自身）
+	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"url":%q,"gfw":false}`, src.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Errorf("preview gfw=false: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestLogRetryGFW（R7 A5 重放）：preview gfw:false → 日志 Params 记录 gfw=false，
+// retry 200；旧日志（无 gfw 键，RulesetID 指向名为 gfw 的规则集）→ retry 400 规则集
+// 名称冲突——证明缺省开语义在重放路径成立。
+func TestLogRetryGFW(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	// gfw=false 显式：preview 成功、日志 Params.gfw=false、retry 成功
+	rec := doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"url":%q,"gfw":false}`, src.URL), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	log := st.ListLogs(10)[0]
+	if v, _ := log.Params["gfw"].(bool); v != false {
+		t.Errorf("log params gfw = %v, want false（gfw=false 显式）", log.Params["gfw"])
+	}
+	retry := doJSON(h, http.MethodPost, "/api/v1/logs/"+log.ID+"/retry", "", nil)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("retry gfw=false: status = %d; body=%s", retry.Code, retry.Body.String())
+	}
+	// 旧日志无 gfw 键 + 用户规则集名为 gfw → retry 缺省开触发名称冲突 400
+	tpl := createRuleSetViaAPI(t, h, "gfw", "https://x.example.com/gfw.yaml", "domain", "yaml")
+	if _, err := st.AppendLog(store.LogEntry{Kind: "convert", URLFull: src.URL, Params: map[string]any{"ruleset_id": tpl["id"].(string)}}); err != nil {
+		t.Fatalf("AppendLog: %v", err)
+	}
+	oldLog := st.ListLogs(10)[0]
+	retry = doJSON(h, http.MethodPost, "/api/v1/logs/"+oldLog.ID+"/retry", "", nil)
+	if retry.Code != http.StatusBadRequest || !strings.Contains(retry.Body.String(), "规则集名称冲突") {
+		t.Errorf("retry old-log default-on: status = %d body=%s, want 400 规则集名称冲突", retry.Code, retry.Body.String())
+	}
+}
+
+// TestLogRetryGFWBackfill（FIX-3）：旧日志缺 gfw 键 → retry 成功后的新日志 Params
+// 补记实际生效值 gfw=true（而非原样缺键透传）；旧日志显式 gfw=false → 新日志保持
+// false（不覆盖显式值）。
+func TestLogRetryGFWBackfill(t *testing.T) {
+	h, st := newTestServerWithStore(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+
+	// 旧日志缺 gfw 键（R7 之前产生的日志）→ retry 按缺省 true 执行，新日志补记
+	if _, err := st.AppendLog(store.LogEntry{Kind: "convert", URLFull: src.URL, Params: map[string]any{}}); err != nil {
+		t.Fatalf("AppendLog: %v", err)
+	}
+	oldLog := st.ListLogs(10)[0]
+	if _, ok := oldLog.Params["gfw"]; ok {
+		t.Fatalf("前置条件: 旧日志不应有 gfw 键, got %v", oldLog.Params["gfw"])
+	}
+	retry := doJSON(h, http.MethodPost, "/api/v1/logs/"+oldLog.ID+"/retry", "", nil)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("retry: status = %d; body=%s", retry.Code, retry.Body.String())
+	}
+	newLog := st.ListLogs(10)[0]
+	if v, ok := newLog.Params["gfw"].(bool); !ok || v != true {
+		t.Errorf("新日志 params gfw = %v (ok=%v), want true（缺省补记）", newLog.Params["gfw"], ok)
+	}
+
+	// 显式 gfw=false 的旧日志 → 重放后新日志保持 false
+	if _, err := st.AppendLog(store.LogEntry{Kind: "convert", URLFull: src.URL, Params: map[string]any{"gfw": false}}); err != nil {
+		t.Fatalf("AppendLog: %v", err)
+	}
+	retry = doJSON(h, http.MethodPost, "/api/v1/logs/"+st.ListLogs(10)[0].ID+"/retry", "", nil)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("retry gfw=false: status = %d; body=%s", retry.Code, retry.Body.String())
+	}
+	if v, _ := st.ListLogs(10)[0].Params["gfw"].(bool); v != false {
+		t.Errorf("新日志 params gfw = %v, want false（显式值保留）", st.ListLogs(10)[0].Params["gfw"])
 	}
 }

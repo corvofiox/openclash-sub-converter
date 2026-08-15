@@ -483,6 +483,8 @@ function convertBody() {
     tls13: $('#convTls13').checked,
     scv: $('#convScv').checked,
     strip_emoji: $('#convStripEmoji').checked,
+    // R7：内置 GFW 规则集开关（缺省服务端 = 开，这里默认勾选，显式携带 true/false）
+    gfw: $('#convGfw').checked,
   };
   const ruleSets = [...state.selectedRuleSets];
   if (ruleSets.length) body.ruleset_id = ruleSets.join(',');
@@ -529,6 +531,8 @@ function genSubLink() {
   if ($('#convTls13').checked) q.set('tls13', 'true');
   if ($('#convScv').checked) q.set('scv', 'true');
   if ($('#convStripEmoji').checked) q.set('strip_emoji', 'true');
+  // R7：gfw 恒携带（勾选 gfw=true、取消 gfw=false）——缺省即开，取消必须显式关
+  q.set('gfw', $('#convGfw').checked ? 'true' : 'false');
   const ruleSets = [...state.selectedRuleSets];
   if (ruleSets.length) q.set('ruleset_id', ruleSets.join(','));
   // window.location.host 已含端口（如 192.168.1.5:25500）；协议跟随当前页面
@@ -591,7 +595,7 @@ function paramSummary(p) {
   ['include', 'exclude', 'rename'].forEach((k) => {
     if (p[k]) parts.push(`<span class="param-badge">${esc(k)}=${esc(p[k])}</span>`);
   });
-  ['udp', 'tls13', 'scv', 'strip_emoji'].forEach((k) => {
+  ['udp', 'tls13', 'scv', 'strip_emoji', 'gfw'].forEach((k) => {
     if (p[k]) parts.push(`<span class="param-badge">${esc(k)}</span>`);
   });
   if (p.ruleset_id) parts.push(`<span class="param-badge">规则集</span>`);

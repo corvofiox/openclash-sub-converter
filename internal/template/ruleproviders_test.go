@@ -21,7 +21,7 @@ func sampleRPs() []RuleProvider {
 // baseRulesCfg 返回含 MATCH 行的最小配置。
 func baseRulesCfg() map[string]any {
 	return map[string]any{
-		"rules": []any{"GEOIP,CN,DIRECT", "MATCH,手动选择"},
+		"rules": []any{"GEOIP,CN,DIRECT", "MATCH,漏网之鱼"},
 	}
 }
 
@@ -90,7 +90,7 @@ func TestInjectStructure(t *testing.T) {
 		"RULE-SET,cn-domains,手动选择",
 		"RULE-SET,cn-ips,手动选择",
 		"GEOIP,CN,DIRECT",
-		"MATCH,手动选择",
+		"MATCH,漏网之鱼",
 	}
 	if !reflect.DeepEqual(rules, wantRules) {
 		t.Errorf("rules = %v, want %v", rules, wantRules)
@@ -280,7 +280,7 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 	if rules[0].(string) != "RULE-SET,cn-domains,手动选择" {
 		t.Errorf("rules[0] = %q, want RULE-SET 完整行", rules[0])
 	}
-	if rules[4].(string) != "MATCH,手动选择" {
+	if rules[4].(string) != "MATCH,漏网之鱼" {
 		t.Errorf("rules[4] = %q, want MATCH 在最后", rules[4])
 	}
 }
@@ -309,7 +309,7 @@ func TestPerRPTargetGroup(t *testing.T) {
 		"RULE-SET,ads,手动选择",
 		"RULE-SET,youtube,YouTube",
 		"GEOIP,CN,DIRECT",
-		"MATCH,手动选择",
+		"MATCH,漏网之鱼",
 	}
 	if !reflect.DeepEqual(rules, want) {
 		t.Errorf("rules = %v, want %v", rules, want)
@@ -323,5 +323,52 @@ func TestPerRPTargetGroup(t *testing.T) {
 		if _, ok := rps2[name]; !ok {
 			t.Errorf("rule-providers 缺 %s", name)
 		}
+	}
+}
+
+// TestBuiltinGFWProvider（R7）：内置 GFW provider 字段契约 + 注入形态——
+// RULE-SET,gfw,手动选择 插在 GEOIP 之前；rule-providers 段含 gfw 条目
+// （url/behavior/format/interval/path，interval 为通用每日值）。
+func TestBuiltinGFWProvider(t *testing.T) {
+	rp := BuiltinGFWProvider()
+	if rp.Name != "gfw" {
+		t.Errorf("Name = %q, want gfw", rp.Name)
+	}
+	if rp.URL != "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt" {
+		t.Errorf("URL = %q, want release/gfw.txt", rp.URL)
+	}
+	if rp.Behavior != "domain" || rp.Format != "yaml" {
+		t.Errorf("Behavior/Format = %q/%q, want domain/yaml", rp.Behavior, rp.Format)
+	}
+	if rp.TargetGroup != "" {
+		t.Errorf("TargetGroup = %q, want 空串（回落默认手动选择）", rp.TargetGroup)
+	}
+
+	cfg := baseRulesCfg()
+	if err := ApplyRuleProviders(cfg, []RuleProvider{rp}); err != nil {
+		t.Fatalf("ApplyRuleProviders: %v", err)
+	}
+	rules, _ := cfg["rules"].([]any)
+	want := []any{"RULE-SET,gfw,手动选择", "GEOIP,CN,DIRECT", "MATCH,漏网之鱼"}
+	if !reflect.DeepEqual(rules, want) {
+		t.Errorf("rules = %v, want %v", rules, want)
+	}
+	providers, _ := cfg["rule-providers"].(map[string]any)
+	e, ok := providers["gfw"].(map[string]any)
+	if !ok {
+		t.Fatalf("rule-providers 缺 gfw，实际 %v", providers)
+	}
+	if e["type"] != "http" || e["url"] != rp.URL || e["behavior"] != "domain" ||
+		e["format"] != "yaml" || e["interval"] != 86400 || e["path"] != "./ruleset/gfw.yaml" {
+		t.Errorf("gfw provider entry = %v", e)
+	}
+	// 生效路径：cfg 在 ApplyRuleProviders 前无 rule-providers 段（无 rps 时旧行为）
+	var empty map[string]any
+	empty = map[string]any{"rules": []any{"GEOIP,CN,DIRECT", "MATCH,漏网之鱼"}}
+	if err := ApplyRuleProviders(empty, nil); err != nil {
+		t.Fatalf("empty: %v", err)
+	}
+	if _, ok := empty["rule-providers"]; ok {
+		t.Error("空 rps 不应注入 rule-providers")
 	}
 }

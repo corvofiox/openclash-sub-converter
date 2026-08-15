@@ -82,12 +82,12 @@ GROUPS() { awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' "$1
 curl -s -o $WORK/out1.yaml -w "%{http_code}" "$BASE" > $WORK/code.txt
 check "基础转换 HTTP 200" "200" "$(cat $WORK/code.txt)"
 check "节点数 7" "7" "$(NODES $WORK/out1.yaml)"
-check "组数 10（含直连/拒绝）" "10" "$(GROUPS $WORK/out1.yaml)"
+check "组数 11（含直连/拒绝/漏网之鱼）" "11" "$(GROUPS $WORK/out1.yaml)"
 # R3 段序契约：proxy-groups 在 proxies 前（mihomo 对段落顺序无要求，固定顺序保证产物确定性）
 PG_LN=$(grep -n '^proxy-groups:' $WORK/out1.yaml | cut -d: -f1)
 PX_LN=$(grep -n '^proxies:' $WORK/out1.yaml | cut -d: -f1)
 check "段序 proxy-groups 在 proxies 前" "1" "$([ -n "$PG_LN" ] && [ -n "$PX_LN" ] && [ "$PG_LN" -lt "$PX_LN" ] && echo 1 || echo 0)"
-check "手动选择组存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out1.yaml | grep -c '手动选择')"
+check "手动选择组存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out1.yaml | grep -c -- 'name: 手动选择')"
 check "vless reality 节点" "1" "$(grep -c 'reality-opts' $WORK/out1.yaml)"
 
 # 4.1 R1/R2 策略组结构综合断言（计数式，不依赖输入魔数）：
@@ -151,15 +151,19 @@ for l in px:
     elif l.startswith('    name: '):    # 节点条目内 name 键（4 空格）
         node_names.append(unquote(l[10:].strip()))
 
-fixed = ('手动选择', '自动选择', '直连', '拒绝', '其他节点')
+fixed = ('手动选择', '自动选择', '漏网之鱼', '直连', '拒绝', '其他节点')
 region_names = [g for g in order if g not in fixed]
 other = '其他节点' in order
 expect_manual = ['自动选择'] + region_names + (['其他节点'] if other else []) + node_names + ['直连', '拒绝']
+# R7：漏网之鱼 = [手动选择, ...手动选择组 proxies[1:]]（首位手动选择、无自动选择）
+expect_leak = ['手动选择'] + region_names + (['其他节点'] if other else []) + node_names + ['直连', '拒绝']
 print('direct=%d' % (1 if by_name.get('直连') == ['DIRECT'] else 0))
 print('reject=%d' % (1 if by_name.get('拒绝') == ['REJECT'] else 0))
 print('manual_order=%d' % (1 if by_name.get('手动选择') == expect_manual else 0))
 print('manual_count=%d' % (1 if len(by_name.get('手动选择', [])) == len(expect_manual) else 0))
-print('group_count=%d' % (1 if len(order) == 4 + len(region_names) + (1 if other else 0) else 0))
+print('leak=%d' % (1 if by_name.get('漏网之鱼') == expect_leak else 0))
+print('leak_pos=%d' % (1 if len(order) >= 2 and order[1] == '漏网之鱼' else 0))
+print('group_count=%d' % (1 if len(order) == 5 + len(region_names) + (1 if other else 0) else 0))
 # R3：附加组名检查（argv[2]）——专属组 proxies = [手动选择, ...手动选择组 proxies]
 if len(sys.argv) > 2:
     extra = sys.argv[2]
@@ -190,10 +194,51 @@ check "R2 无失败无告警头" "0" "$(grep -ci 'x-osc-warning' $WORK/ok_hdr.tx
 WARN_JSON=$(curl -s -X POST -H 'Content-Type: application/json' -d "{\"url\":\"$SUB_URL|http://127.0.0.1:19999/nope\"}" http://127.0.0.1:$SRV_PORT/api/v1/convert/preview)
 check "R2 preview warnings 含坏源" "1" "$(echo "$WARN_JSON" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(1 if any("127.0.0.1:19999" in w for w in d.get("warnings",[])) else 0)')"
 
+
+# 4.3 R7 内置 GFW 规则集 + 漏网之鱼兜底策略组
+# A1：默认输出注入 rule-providers.gfw（url=release/gfw.txt，behavior=domain，
+# format=yaml，interval=86400，path=./ruleset/gfw.yaml）+ RULE-SET,gfw,手动选择 在 GEOIP 前
+RP=$(awk '/^rule-providers:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out1.yaml)
+check "R7 默认注入 rule-providers.gfw" "1" "$(echo "$RP" | grep -c '^  gfw:')"
+check "R7 gfw url=release/gfw.txt" "1" "$(echo "$RP" | grep -c 'url: https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt')"
+check "R7 gfw behavior/format/interval" "1" "$([ "$(echo "$RP" | grep -c 'behavior: domain')" -ge 1 ] && [ "$(echo "$RP" | grep -c 'format: yaml')" -ge 1 ] && [ "$(echo "$RP" | grep -c 'interval: 86400')" -ge 1 ] && [ "$(echo "$RP" | grep -c 'path: ./ruleset/gfw.yaml')" -ge 1 ] && echo 1 || echo 0)"
+check "R7 RULE-SET,gfw,手动选择 存在" "1" "$(grep -c -- '- RULE-SET,gfw,手动选择' $WORK/out1.yaml)"
+GFW_LN=$(grep -n -- '- RULE-SET,gfw,手动选择' $WORK/out1.yaml | cut -d: -f1 | head -1)
+GEO_LN=$(grep -n -- '- GEOIP,CN,DIRECT' $WORK/out1.yaml | cut -d: -f1 | head -1)
+MCH_LN=$(grep -n -- '- MATCH,漏网之鱼' $WORK/out1.yaml | cut -d: -f1 | head -1)
+check "R7 gfw RULE-SET 在 GEOIP 前" "1" "$([ -n "$GFW_LN" ] && [ -n "$GEO_LN" ] && [ "$GFW_LN" -lt "$GEO_LN" ] && echo 1 || echo 0)"
+check "R7 MATCH 兜底=漏网之鱼(最后)" "1" "$([ -n "$MCH_LN" ] && [ -n "$GEO_LN" ] && [ "$GEO_LN" -lt "$MCH_LN" ] && echo 1 || echo 0)"
+check "R7 无 MATCH,手动选择 残留" "0" "$(grep -c -- '- MATCH,手动选择' $WORK/out1.yaml)"
+# A3：漏网之鱼组构成/顺序/位置（check_groups.py 新增 leak/leak_pos 输出）
+check "R7 漏网之鱼组顺序/构成" "1" "$(echo "$GCHK" | grep '^leak=' | cut -d= -f2)"
+check "R7 漏网之鱼紧跟手动选择(组序第2)" "1" "$(echo "$GCHK" | grep '^leak_pos=' | cut -d= -f2)"
+# A5：gfw=false 关闭内置（无 rule-providers 段、无 RULE-SET,gfw；兜底与漏网之鱼组不变）
+curl -s -o $WORK/out_gfw_off.yaml -w "%{http_code}" "$BASE&gfw=false" > $WORK/code_gfw_off.txt
+check "R7 gfw=false /sub 200" "200" "$(cat $WORK/code_gfw_off.txt)"
+check "R7 gfw=false 无 rule-providers 段" "0" "$(grep -c '^rule-providers:' $WORK/out_gfw_off.yaml)"
+check "R7 gfw=false 无 RULE-SET,gfw" "0" "$(grep -c -- '- RULE-SET,gfw,手动选择' $WORK/out_gfw_off.yaml)"
+check "R7 gfw=false 兜底仍=漏网之鱼" "1" "$(grep -c -- '- MATCH,漏网之鱼' $WORK/out_gfw_off.yaml)"
+check "R7 gfw=false 漏网之鱼组存在" "1" "$(grep -c -- 'name: 漏网之鱼' $WORK/out_gfw_off.yaml)"
+# A7：convert JSON 路径（缺省注入 / gfw:false 关闭）+ WebUI checkbox 默认勾选
+GFW_DEF_RUN=$(curl -s -X POST -H 'Content-Type: application/json' -d "{\"url\":\"$SUB_URL\"}" http://127.0.0.1:$SRV_PORT/api/v1/convert/run)
+check "R7 convert 缺省 run 含 gfw" "1" "$(echo "$GFW_DEF_RUN" | python3 -c 'import json,sys;print(1 if "RULE-SET,gfw,手动选择" in json.load(sys.stdin)["yaml"] else 0)')"
+GFW_OFF_RUN=$(curl -s -X POST -H 'Content-Type: application/json' -d "{\"url\":\"$SUB_URL\",\"gfw\":false}" http://127.0.0.1:$SRV_PORT/api/v1/convert/run)
+check "R7 convert gfw:false 无 RULE-SET,gfw" "0" "$(echo "$GFW_OFF_RUN" | python3 -c 'import json,sys;print(1 if "RULE-SET,gfw" in json.load(sys.stdin)["yaml"] else 0)')"
+check "R7 WebUI GFW checkbox 默认勾选" "1" "$(curl -s http://127.0.0.1:$SRV_PORT/ | grep -c 'id="convGfw" checked')"
+check "R7 app.js 携带 gfw" "1" "$([ "$(curl -s http://127.0.0.1:$SRV_PORT/app.js | grep -c 'convGfw')" -ge 1 ] && echo 1 || echo 0)"
+# A6：用户自建规则集名为 gfw + 默认内置 GFW → 400；gfw=false 时用户规则集可用
+GFWPL_CODE=$(curl -s -o $WORK/gfwpl.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"gfw","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text","enabled":true}' \
+  http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)
+check "R7 创建同名规则集 gfw 201" "201" "$GFWPL_CODE"
+GFWPL=$(python3 -c 'import json;print(json.load(open("'$WORK'/gfwpl.json"))["rule_set"]["id"])')
+check "R7 规则集名=gfw + 默认GFW → 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=$GFWPL")"
+check "R7 gfw=false + 用户gfw规则集 → 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&gfw=false&ruleset_id=$GFWPL")"
+
 # 5. 参数
 check "include=日本 剩2节点" "2" "$(curl -s "$BASE&include=%E6%97%A5%E6%9C%AC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
 check "exclude=日本 剩5节点" "5" "$(curl -s "$BASE&exclude=%E6%97%A5%E6%9C%AC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
-check "rename 生效(2节点×4处)" "8" "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP" | grep -c 'JP0')"
+check "rename 生效(2节点×5处,含漏网之鱼)" "10" "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP" | grep -c 'JP0')"
 # R1 rename 多规则（逗号分隔顺序执行）：日本→JP 与 香港→HK 各自命中（计数 ≥1）
 check "rename 多规则 JP0≥1" "1" "$([ "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP,%E9%A6%99%E6%B8%AF/HK" | grep -c 'JP0')" -ge 1 ] && echo 1 || echo 0)"
 check "rename 多规则 HK0≥1" "1" "$([ "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP,%E9%A6%99%E6%B8%AF/HK" | grep -c 'HK0')" -ge 1 ] && echo 1 || echo 0)"
@@ -332,16 +377,18 @@ check "R3 专属组 Netflix 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-
 check "R3 专属组 proxies=[手动选择,...手动组]" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl1.yaml Netflix | grep '^extra=' | cut -d= -f2)"
 RS_LN=$(grep -n -- '- RULE-SET,Netflix,Netflix' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
 GEO_LN=$(grep -n -- '- GEOIP,CN,DIRECT' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
-MCH_LN=$(grep -n -- '- MATCH,手动选择' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
+MCH_LN=$(grep -n -- '- MATCH,漏网之鱼' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
+GFW_LN=$(grep -n -- '- RULE-SET,gfw,手动选择' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
 check "R3 RULE-SET,Netflix,Netflix 在 GEOIP/MATCH 前" "1" "$([ -n "$RS_LN" ] && [ -n "$GEO_LN" ] && [ -n "$MCH_LN" ] && [ "$RS_LN" -lt "$GEO_LN" ] && [ "$RS_LN" -lt "$MCH_LN" ] && echo 1 || echo 0)"
+check "R7 gfw 在用户规则集后、GEOIP 前" "1" "$([ -n "$RS_LN" ] && [ -n "$GFW_LN" ] && [ -n "$GEO_LN" ] && [ "$RS_LN" -lt "$GFW_LN" ] && [ "$GFW_LN" -lt "$GEO_LN" ] && echo 1 || echo 0)"
 
 # 双规则集（逗号分隔）：两个专属组 + 两条 RULE-SET + rule-providers 2 条
 curl -s -o $WORK/out_tpl2.yaml -w "%{http_code}" "$BASE&ruleset_id=$TPL1,$TPL2" > $WORK/code_tpl2.txt
 check "R4 双规则集 /sub 200" "200" "$(cat $WORK/code_tpl2.txt)"
 check "R4 专属组 Netflix 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl2.yaml | grep -c -- '- name: Netflix')"
 check "R4 专属组 YouTube 存在" "1" "$(awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out_tpl2.yaml | grep -c -- '- name: YouTube')"
-check "R4 rule-providers 2 条" "2" "$(grep -c 'path: ./ruleset/' $WORK/out_tpl2.yaml)"
-check "R4 RULE-SET 2 条" "2" "$(grep -c -- '- RULE-SET,' $WORK/out_tpl2.yaml)"
+check "R4 rule-providers 3 条(双规则集+gfw)" "3" "$(grep -c 'path: ./ruleset/' $WORK/out_tpl2.yaml)"
+check "R4 RULE-SET 3 条(双规则集+gfw)" "3" "$(grep -c -- '- RULE-SET,' $WORK/out_tpl2.yaml)"
 check "R4 专属组 proxies=[手动选择,...手动组] Netflix" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml Netflix | grep '^extra=' | cut -d= -f2)"
 check "R4 专属组 proxies=[手动选择,...手动组] YouTube" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml YouTube | grep '^extra=' | cut -d= -f2)"
 
@@ -364,7 +411,7 @@ check "P1-1 专属组 DIRECT(规则集) 存在" "1" "$(awk '/^proxy-groups:/{f=1
 check "P1-1 RULE-SET,DIRECT,DIRECT(规则集)" "1" "$(grep -c -- '- RULE-SET,DIRECT,DIRECT(规则集)' $WORK/out_tpl4.yaml)"
 curl -s -o $WORK/out_dup.yaml -w "%{http_code}" "$BASE&ruleset_id=$TPL1,$TPL1" > $WORK/code_dup.txt
 check "P2-2 重复 ruleset_id /sub 200" "200" "$(cat $WORK/code_dup.txt)"
-check "P2-2 重复 id 去重 rule-providers 1 条" "1" "$(grep -c 'path: ./ruleset/' $WORK/out_dup.yaml)"
+check "P2-2 重复 id 去重 rule-providers 2 条(1规则集+gfw)" "2" "$(grep -c 'path: ./ruleset/' $WORK/out_dup.yaml)"
 check "P2-1 规则集名含逗号 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"Netflix,cn","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)"
 check "P2-1 规则集名含换行 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"a\nb","url":"http://127.0.0.1:'$SRC_PORT'/rules_domain.list","behavior":"domain","format":"text"}' http://127.0.0.1:$SRV_PORT/api/v1/rule-sets)"
 
@@ -409,7 +456,7 @@ check "禁用规则集1 200" "200" "$(cat $WORK/code_dis.txt)"
 check "R4 disabled 规则集 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=$TPL1")"
 check "R4 不存在规则集 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=deadbeef0000")"
 check "R4 多值含非法 /sub 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=$TPL2,deadbeef0000")"
-check "R3 无规则集无 rule-providers 段(A7)" "0" "$(grep -c '^rule-providers:' $WORK/out1.yaml)"
+check "R7 默认 out1 含 rule-providers(内置gfw)" "1" "$(grep -c '^rule-providers:' $WORK/out1.yaml)"
 
 # 8. mihomo 全量校验产物（无规则集 / 单规则集 / 双规则集）
 # P2-4: set -e 下校验命令失败会提前退出——先清旧残留再建目录，cleanup trap 兜底，
@@ -429,9 +476,9 @@ func main() {
     }
 }
 EOF
-VOUT=$(go run ./cmd/validate_tmp $WORK/out1.yaml $WORK/out_tpl1.yaml $WORK/out_tpl2.yaml 2>&1)
+VOUT=$(go run ./cmd/validate_tmp $WORK/out1.yaml $WORK/out_tpl1.yaml $WORK/out_tpl2.yaml $WORK/out_gfw_off.yaml 2>&1)
 rm -rf cmd/validate_tmp
-check "mihomo 校验 3 产物" "3" "$(echo "$VOUT" | grep -c VALIDATE_OK)"
+check "mihomo 校验 4 产物" "4" "$(echo "$VOUT" | grep -c VALIDATE_OK)"
 
 echo "=============================="
 echo "冒烟结果: PASS=$PASS FAIL=$FAIL (服务端口 $SRV_PORT 源端口 $SRC_PORT)"

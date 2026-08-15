@@ -84,8 +84,8 @@ func TestBuildBasic(t *testing.T) {
 	if !ok || len(rules) != 2 {
 		t.Fatalf("rules = %T %v", cfg["rules"], cfg["rules"])
 	}
-	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,手动选择" {
-		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,手动选择]", rules)
+	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
 	}
 
 	// 默认选项下不新增任何字段
@@ -200,5 +200,23 @@ func TestBuildEmptyName(t *testing.T) {
 		if _, err := Build([]map[string]any{n}, testGroups(), Options{}); err == nil {
 			t.Errorf("case %d: expected error for node without name", i)
 		}
+	}
+}
+
+// TestBuiltinGFWConstants 钉住内置 GFW 规则集常量（R7 A1 数据源契约）：
+// 名称 gfw、Loyalsoldier/clash-rules release 分支 gfw.txt、behavior=domain、format=yaml。
+func TestBuiltinGFWConstants(t *testing.T) {
+	if BuiltinGFWName != "gfw" {
+		t.Errorf("BuiltinGFWName = %q, want %q", BuiltinGFWName, "gfw")
+	}
+	if BuiltinGFWURL != "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt" {
+		t.Errorf("BuiltinGFWURL = %q, want release/gfw.txt", BuiltinGFWURL)
+	}
+	if BuiltinGFWBehavior != "domain" || BuiltinGFWFormat != "yaml" {
+		t.Errorf("BuiltinGFWBehavior/Format = %q/%q, want domain/yaml", BuiltinGFWBehavior, BuiltinGFWFormat)
+	}
+	// 兜底规则行指向「漏网之鱼」组（R7 A2）
+	if FinalRule != "MATCH,漏网之鱼" {
+		t.Errorf("FinalRule = %q, want MATCH,漏网之鱼", FinalRule)
 	}
 }

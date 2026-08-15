@@ -121,12 +121,16 @@ type convertResult struct {
 
 // runPipeline 执行转换管线：拉取→解析→节点级校验→transform→groups→
 // ApplyStripEmoji（strip_emoji=true 时剥离节点名 emoji，可选）→
-// template（可选规则集注入）→（render=true 时）渲染+校验。
+// template（可选规则集注入 + 内置 GFW 注入）→（render=true 时）渲染+校验。
+//
+// gfw 控制内置 GFW 规则集（固定名 gfw）是否注入：true 时追加到用户规则集
+// 之后（RULE-SET,gfw,手动选择 排在用户规则集后、GEOIP 前）；用户规则集已
+// 有同名 gfw → 400「规则集名称冲突」（不静默覆盖）。
 //
 // 语义分层：结构非法的源 URL 由调用方在进入本函数前校验（400）；结构合法但
 // 拉取/解析失败的源记 warn 并跳过，全部失败 → 502；transform 参数错误
 // （transform.ErrInvalidRegex）→ 400；其余内部错误 → 500。
-func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Filter, opts template.Options, ruleSets []store.RuleSet, render bool) (*convertResult, *pipelineError) {
+func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Filter, opts template.Options, ruleSets []store.RuleSet, gfw bool, render bool) (*convertResult, *pipelineError) {
 	ctx := r.Context()
 	var allNodes []map[string]any
 	failedHosts := make([]string, 0)
@@ -213,6 +217,11 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 			}
 			seenNames[rs.Name] = true
 		}
+		// R7：内置 GFW 与用户自建规则集同名 → 400（与 P1-2 同名拦截同语义，
+		// 避免 rule-providers map 键覆盖静默丢弃用户规则集或内置 GFW）。
+		if gfw && seenNames[template.BuiltinGFWName] {
+			return nil, &pipelineError{code: http.StatusBadRequest, msg: fmt.Sprintf("规则集名称冲突: %s(与内置 GFW 规则集同名)", template.BuiltinGFWName)}
+		}
 		usedNames := make(map[string]bool, len(groupsList)+len(ruleSets))
 		for _, g := range groupsList {
 			if n, ok := g["name"].(string); ok {
@@ -267,6 +276,12 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 	if err != nil {
 		return nil, &pipelineError{code: http.StatusInternalServerError, msg: fmt.Sprintf("build config failed: %v", err)}
 	}
+	// R7：内置 GFW 追加到 rps 末尾——ApplyRuleProviders 按 rps 顺序插入
+	// RULE-SET 行，故 gfw 排在用户规则集之后、GEOIP,CN,DIRECT 之前；
+	// 与用户规则集必须同批一次调用（rule-providers 段是整体覆盖，分开调用互相抹掉）。
+	if gfw {
+		rps = append(rps, template.BuiltinGFWProvider())
+	}
 	if len(rps) > 0 {
 		if err := template.ApplyRuleProviders(cfgMap, rps); err != nil {
 			return nil, &pipelineError{code: http.StatusInternalServerError, msg: fmt.Sprintf("apply rule providers failed: %v", err)}
@@ -312,6 +327,7 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 // 凭证不进 URL）；include/exclude/rename 为可选正则；udp/tls13/scv/
 // strip_emoji 取值 "true"/"1" 视为 true。
 // strip_emoji=true 时在输出阶段剥离节点名中的 emoji（识别仍基于原始名）。
+// gfw 控制内置 GFW 规则集：缺省 = 开，gfw=false/0 才关（truthy 解析）。
 //
 // 错误映射：参数错误 400（含非法 url 结构、src 不可用、正则非法）；所有源
 // 拉取失败或校验后无有效节点 502；转换/渲染/校验失败 500。部分源失败时只
@@ -382,6 +398,11 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 		TLS13: truthy(q.Get("tls13")),
 		SCV:   truthy(q.Get("scv")),
 	}
+	// R7：内置 GFW 规则集开关——缺省（参数缺失）= 开，显式 gfw=false/0 才关。
+	gfwOn := true
+	if q.Has("gfw") {
+		gfwOn = truthy(q.Get("gfw"))
+	}
 
 	// R4：ruleset_id 逗号分隔多值；任一规则集不存在或禁用 → 400
 	ruleSets, perr := s.resolveRuleSets(q.Get("ruleset_id"))
@@ -389,14 +410,14 @@ func (s *server) handleSub(w http.ResponseWriter, r *http.Request) {
 		s.logSubError(w, r, start, perr.msg, srcID, srcName, urlFull, q)
 		return
 	}
-	res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, true)
+	res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, gfwOn, true)
 	s.appendLog(store.LogEntry{
 		Kind:        "sub",
 		SourceID:    srcID,
 		SourceName:  srcName,
 		URLRedacted: redactURL(urlFullOrSources(urlFull, sources)),
 		URLFull:     urlFull,
-		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), opts.UDP, opts.TLS13, opts.SCV, truthy(q.Get("strip_emoji")), q.Get("ruleset_id")),
+		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), opts.UDP, opts.TLS13, opts.SCV, truthy(q.Get("strip_emoji")), q.Get("ruleset_id"), gfwOn),
 		Status:      statusOf(perr),
 		Error:       errOf(perr),
 		NodeCount:   nodeCountOf(res, perr),
@@ -428,8 +449,9 @@ type convertRequest struct {
 	UDP        *bool    `json:"udp"`
 	TLS13      *bool    `json:"tls13"`
 	SCV        *bool    `json:"scv"`
-	StripEmoji *bool   `json:"strip_emoji"`
-	RuleSetID  string  `json:"ruleset_id"`
+	StripEmoji *bool    `json:"strip_emoji"`
+	Gfw        *bool    `json:"gfw"` // 内置 GFW 规则集开关；缺省 nil = 开（R7），显式 false 才关
+	RuleSetID  string   `json:"ruleset_id"`
 }
 
 // handleConvert 是 convert 端点（preview/run）的公共实现。
@@ -509,15 +531,17 @@ func (s *server) handleConvert(kind string, render bool) http.HandlerFunc {
 
 		filter := transform.Filter{Rename: req.Rename, Include: req.Include, Exclude: req.Exclude, StripEmoji: boolVal(req.StripEmoji)}
 		opts := template.Options{UDP: boolVal(req.UDP), TLS13: boolVal(req.TLS13), SCV: boolVal(req.SCV)}
+		// R7：内置 GFW 开关——缺省（字段缺失 nil）= 开，显式 false 才关。
+		gfw := boolValDefault(req.Gfw, true)
 
-		res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, render)
+		res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, gfw, render)
 		s.appendLog(store.LogEntry{
 			Kind:        kind,
 			SourceID:    srcID,
 			SourceName:  srcName,
 			URLRedacted: redactURL(urlFullOrSources(urlFull, sources)),
 			URLFull:     urlFull,
-			Params:      buildParams(req.Include, req.Exclude, req.Rename, opts.UDP, opts.TLS13, opts.SCV, boolVal(req.StripEmoji), req.RuleSetID),
+			Params:      buildParams(req.Include, req.Exclude, req.Rename, opts.UDP, opts.TLS13, opts.SCV, boolVal(req.StripEmoji), req.RuleSetID, gfw),
 			Status:      statusOf(perr),
 			Error:       errOf(perr),
 			NodeCount:   nodeCountOf(res, perr),
@@ -637,6 +661,9 @@ func (s *server) handleLogRetry(w http.ResponseWriter, r *http.Request) {
 		TLS13: boolParam(entry.Params, "tls13"),
 		SCV:   boolParam(entry.Params, "scv"),
 	}
+	// R7：重放内置 GFW 开关——新日志 Params 恒有 gfw 键；旧日志缺键 → 默认开
+	// （与「缺省开」语义一致，而非 boolParam 的 false 零值）。
+	gfw := boolParamDefault(entry.Params, "gfw", true)
 	var ruleSets []store.RuleSet
 	if rsID := strParam(entry.Params, "ruleset_id"); rsID != "" {
 		var perr *pipelineError
@@ -646,14 +673,29 @@ func (s *server) handleLogRetry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, false)
+	res, perr := s.runPipeline(r, sources, filter, opts, ruleSets, gfw, false)
+
+	// FIX-3：重放成功后给新日志补记 gfw 实际生效值——旧日志（R7 之前）缺 gfw 键，
+	// 重放按缺省 true 执行；若 Params 原样透传，新日志仍未记录实际执行值，后续重放
+	// 会继续依赖缺省回退。只复制写入、不污染原日志条目；键已存在则保留原值。
+	params := entry.Params
+	if perr == nil {
+		if _, ok := params["gfw"]; !ok {
+			cp := make(map[string]any, len(params)+1)
+			for k, v := range params {
+				cp[k] = v
+			}
+			cp["gfw"] = true
+			params = cp
+		}
+	}
 	s.appendLog(store.LogEntry{
 		Kind:        "preview",
 		SourceID:    entry.SourceID, // 逗号多值原样保留
 		SourceName:  entry.SourceName,
 		URLRedacted: redactURL(urlFullOrSources(rawURL, sources)), // 重新脱敏：源 URL 已更新时展示与实际一致
 		URLFull:     entry.URLFull,                                // 保留原临时 URL（src 场景为空）
-		Params:      entry.Params,
+		Params:      params,
 		Status:      statusOf(perr),
 		Error:       errOf(perr),
 		NodeCount:   nodeCountOf(res, perr),
@@ -1179,6 +1221,24 @@ func boolVal(p *bool) bool {
 	return *p
 }
 
+// boolValDefault 解引用 *bool；nil 视为 def（R7：convert JSON 的 gfw 缺省开）。
+func boolValDefault(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+// boolParamDefault 从日志 Params 读取 bool 参数；缺失/类型不符取默认值
+// （R7：handleLogRetry 重放 gfw，旧日志缺键 → 默认开）。
+func boolParamDefault(p map[string]any, k string, def bool) bool {
+	v, ok := p[k].(bool)
+	if !ok {
+		return def
+	}
+	return v
+}
+
 // urlFullOrSources 取日志用 URL：有临时 url= 参数时用它（含 | 多源），
 // 否则回退到 sources 拼接（src= 场景，仅脱敏展示用）。
 func urlFullOrSources(urlFull string, sources []string) string {
@@ -1188,11 +1248,13 @@ func urlFullOrSources(urlFull string, sources []string) string {
 	return strings.Join(sources, "|")
 }
 
-// buildParams 组装日志 Params（ruleset_id 仅非空时写入）。
-func buildParams(include, exclude, rename string, udp, tls13, scv, stripEmoji bool, ruleSetID string) map[string]any {
+// buildParams 组装日志 Params（布尔参数恒记录，与 strip_emoji 风格一致；
+// ruleset_id 仅非空时写入）。gfw 记录内置 GFW 开关（R7），供 handleLogRetry 重放。
+func buildParams(include, exclude, rename string, udp, tls13, scv, stripEmoji bool, ruleSetID string, gfw bool) map[string]any {
 	m := map[string]any{
 		"include": include, "exclude": exclude, "rename": rename,
 		"udp": udp, "tls13": tls13, "scv": scv, "strip_emoji": stripEmoji,
+		"gfw": gfw,
 	}
 	if ruleSetID != "" {
 		m["ruleset_id"] = ruleSetID
@@ -1256,7 +1318,7 @@ func (s *server) logSubError(w http.ResponseWriter, r *http.Request, start time.
 		SourceName:  srcName,
 		URLRedacted: redactURL(rawURL),
 		URLFull:     rawURL,
-		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), truthy(q.Get("udp")), truthy(q.Get("tls13")), truthy(q.Get("scv")), truthy(q.Get("strip_emoji")), q.Get("ruleset_id")),
+		Params:      buildParams(q.Get("include"), q.Get("exclude"), q.Get("rename"), truthy(q.Get("udp")), truthy(q.Get("tls13")), truthy(q.Get("scv")), truthy(q.Get("strip_emoji")), q.Get("ruleset_id"), !q.Has("gfw") || truthy(q.Get("gfw"))),
 		Status:      "fail",
 		Error:       &errMsg,
 		DurationMS:  time.Since(start).Milliseconds(),

@@ -9,7 +9,8 @@ OpenClash 订阅转换工具是一个轻量级 HTTP 服务（Go 单二进制，�
 
 - **多源聚合**：一次请求拉取多个机场订阅（`|` 分隔），自动识别 Base64 订阅 / Clash YAML / 单条协议链接（ss、ssr、vmess、vless、trojan、hysteria2、hysteria、tuic、anytls、socks5、http）
 - **可控命名**：`include` / `exclude` / `rename` 正则过滤与重命名，节点名/策略组名完全可控，与 OpenClash 自定义规则命名契约对齐
-- **策略组自动构建**：手动选择（自动选择 → 地区组 → 其他节点 → 全节点 → 直连 → 拒绝）/ 自动选择 / 按 emoji/中文/拼音/英文/ISO 代码自动识别地区并分组（**组名不带 emoji**，如「香港节点」）/ 「直连」「拒绝」专属策略组（proxies 恰为 `[DIRECT]` / `[REJECT]`）/ 规则集 → 每个规则集生成独立专属策略组（RULE-SET 指向该组，规则插到列表最前）
+- **策略组自动构建**：手动选择（自动选择 → 地区组 → 其他节点 → 全节点 → 直连 → 拒绝）/ **漏网之鱼兜底组**（`[手动选择, 地区组..., 其他节点?, 全节点..., 直连, 拒绝]`，MATCH 兜底规则指向它）/ 自动选择 / 按 emoji/中文/拼音/英文/ISO 代码自动识别地区并分组（**组名不带 emoji**，如「香港节点」）/ 「直连」「拒绝」专属策略组（proxies 恰为 `[DIRECT]` / `[REJECT]`）/ 规则集 → 每个规则集生成独立专属策略组（RULE-SET 指向该组，规则插到列表最前）
+- **内置 GFW 规则集（默认启用）**：固定注入 Loyalsoldier/clash-rules `gfw.txt`（behavior=domain，rule-provider 每日自动同步，`gfw=false` 可关）
 - **输出可靠**：YAML 渲染后调用 mihomo `config.UnmarshalRawConfig` 全量校验，保证 OpenClash 可直接消费
 - **安全**：订阅 URL 凭证不出现在日志与错误消息中（只记 host）；响应 `Cache-Control: no-store`
 
@@ -49,7 +50,7 @@ go run ./cmd/server            # 读取 ./config/config.yaml（缺失则用默�
 ### `GET /sub` — 订阅转换（兼容 subconverter 调用习惯）
 
 ```
-GET /sub?target=clash&src=<ID1,ID2>&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=&strip_emoji=
+GET /sub?target=clash&src=<ID1,ID2>&url=<URLENCODE>&include=&exclude=&rename=&udp=&tls13=&scv=&strip_emoji=&gfw=
 ```
 
 | 参数 | 必填 | 说明 |
@@ -64,9 +65,10 @@ GET /sub?target=clash&src=<ID1,ID2>&url=<URLENCODE>&include=&exclude=&rename=&ud
 | `tls13` | 否 | `true`/`1` 时 ss/trojan/http 节点输出 `tls13: true` |
 | `scv` | 否 | `true`/`1` 时 vmess/vless/trojan/hysteria2/tuic/anytls 节点输出 `skip-cert-verify: true` |
 | `strip_emoji` | 否 | `true`/`1` 时节点名剥离 emoji（旗标/符号/VS16/ZWJ；保留空格与分隔符；剥离后重名自动加序号；识别仍基于原始名） |
+| `gfw` | 否 | 内置 GFW 规则集开关，**缺省即开**；`false`/`0` 时关闭（不注入 gfw rule-provider 与 RULE-SET 行）。内置源 = Loyalsoldier/clash-rules `gfw.txt`（behavior=domain，rule-provider 每日自动同步）；命中流量走「手动选择」组 |
 | `ruleset_id` | 否 | 规则集 ID，逗号分隔多值（如 `rs1,rs2`）；每个规则集生成一个专属策略组并注入 `rule-providers`（RULE-SET 指向对应专属组，规则插到列表最前）；任一规则集不存在或已禁用返回 400 |
 
-成功响应：`200`，`Content-Type: text/yaml; charset=utf-8`，`Cache-Control: no-store`，body 为完整 Clash YAML（mixed-port 7893、allow-lan、fake-ip DNS、proxy-groups、proxies、GEOIP,CN,DIRECT + MATCH 规则，proxy-groups 段在 proxies 段之前）。
+成功响应：`200`，`Content-Type: text/yaml; charset=utf-8`，`Cache-Control: no-store`，body 为完整 Clash YAML（mixed-port 7893、allow-lan、fake-ip DNS、proxy-groups、proxies、GEOIP,CN,DIRECT + 内置 GFW `RULE-SET,gfw,手动选择` + `MATCH,漏网之鱼` 兜底规则；proxy-groups 段在 proxies 段之前；「漏网之鱼」组为 MATCH 最终兜底）。
 
 示例（OpenClash 配置订阅 URL 可直接填此链接）：
 

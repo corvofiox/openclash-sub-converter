@@ -17,13 +17,22 @@ type Options struct {
 
 // 默认模板常量（与 docs/design.md 第 6 节一致）。
 const (
-	MixedPort  = 7893
-	AllowLan   = true
-	Mode       = "rule"
-	LogLevel   = "info"
-	IPv6       = false
-	DNSListen  = "0.0.0.0:7874"
-	ManualRule = "MATCH,手动选择"
+	MixedPort = 7893
+	AllowLan  = true
+	Mode      = "rule"
+	LogLevel  = "info"
+	IPv6      = false
+	DNSListen = "0.0.0.0:7874"
+	// FinalRule 是规则列表的兜底 MATCH 行（R7：指向「漏网之鱼」组，不再直指手动选择）。
+	FinalRule = "MATCH,漏网之鱼"
+
+	// R7：内置 GFW 规则集（固定名 gfw，默认启用；经 gfw=false 关闭）。
+	// 来源 Loyalsoldier/clash-rules release 分支 gfw.txt，mihomo rule-provider
+	// 每日自动轮询（interval 86400）随在线仓库同步更新，无需自建更新逻辑。
+	BuiltinGFWName     = "gfw"
+	BuiltinGFWURL      = "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt"
+	BuiltinGFWBehavior = "domain"
+	BuiltinGFWFormat   = "yaml"
 )
 
 // tls13Types 是 tls13 字段适用的代理类型。
@@ -38,7 +47,7 @@ var scvTypes = map[string]bool{
 // Build 组装完整 Clash 配置 map。
 //
 //   - 返回结构：mixed-port、allow-lan、mode、log-level、ipv6、dns、proxy-groups、
-//     proxy-groups、rules（"GEOIP,CN,DIRECT" 与 "MATCH,手动选择"）。
+//     proxy-groups、rules（"GEOIP,CN,DIRECT" 与 "MATCH,漏网之鱼"）。
 //   - opts 应用到每个节点：UDP→udp:true；TLS13→仅 ss/trojan/http 输出
 //     tls13:true；SCV→vmess/vless/trojan/hysteria2/tuic/anytls 输出
 //     skip-cert-verify:true（已存在的值被覆盖）。
@@ -68,7 +77,7 @@ func Build(nodes []map[string]any, groups []map[string]any, opts Options) (map[s
 		"dns":          defaultDNS(),
 		"proxies":      proxies,
 		"proxy-groups": groups,
-		"rules":        []any{"GEOIP,CN,DIRECT", ManualRule},
+		"rules":        []any{"GEOIP,CN,DIRECT", FinalRule},
 	}
 	return cfg, nil
 }

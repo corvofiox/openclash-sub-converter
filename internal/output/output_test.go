@@ -57,7 +57,7 @@ func validConfig() map[string]any {
 			{"name": "DIRECT", "type": "direct"},
 			{"name": "REJECT", "type": "reject"},
 		},
-		"rules": []any{"GEOIP,CN,DIRECT", "MATCH,手动选择"},
+		"rules": []any{"GEOIP,CN,DIRECT", "MATCH,漏网之鱼"},
 	}
 }
 

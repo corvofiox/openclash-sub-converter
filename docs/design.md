@@ -13,7 +13,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
   → link.ParseSubscription（Base64 订阅 / Clash YAML 订阅 / 单链接）→ []map[string]any (Clash 条目)
   → adapter.ParseProxy 逐条校验（失败跳过+告警日志）→ 规范节点列表
   → transform.Filter + transform.Rename（正则 include/exclude/rename）
-  → groups.Build（手动选择/自动选择/地区组/直连/拒绝组）→ 规则集专属组追加（见 5）
+  → groups.Build（手动选择/漏网之鱼/自动选择/地区组/直连/拒绝组）→ 规则集专属组追加（见 5）→ 内置 GFW 注入（见 6）
   → template.Merge（内置默认模板 / 外部 config 模板）
   → output.Render（YAML 序列化）
   → config.UnmarshalRawConfig 全量校验（失败则 500）
@@ -37,7 +37,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
 ## 3. HTTP API（兼容 subconverter 调用习惯）
 
 ```
-GET /sub?target=clash&url=<URLENCODE，多源用 | 分隔>&include=<regex>&exclude=<regex>&rename=<regex替换格式>&udp=true&tls13=true&scv=true&strip_emoji=true&ruleset_id=<id1,id2>&config=<模板URL>
+GET /sub?target=clash&url=<URLENCODE，多源用 | 分隔>&include=<regex>&exclude=<regex>&rename=<regex替换格式>&udp=true&tls13=true&scv=true&strip_emoji=true&gfw=false&ruleset_id=<id1,id2>&config=<模板URL>
 GET /healthz           → 200 ok
 GET /version           → JSON {version, mihomo}
 ```
@@ -48,6 +48,7 @@ GET /version           → JSON {version, mihomo}
 - `include`/`exclude`：Go regexp，对节点名匹配；include 命中保留，exclude 命中剔除（先 exclude 后 include）。
 - `scv=true` 输出节点 `skip-cert-verify: true`；`udp=true` 输出 `udp: true`；`tls13=true` 输出 `tls13: true`（SS/Trojan 系适用字段）。
 - `strip_emoji=true`（默认关）：输出阶段剥离节点名中的 emoji 字符（旗标/符号/VS16/ZWJ/键帽），保留空格与 `|` `｜` 等分隔符；地区识别始终基于原始节点名（与开关无关），剥离后重名自动追加序号并同步改写组引用。
+- `gfw`（**缺省开**）：内置 GFW 规则集开关。固定注入 Loyalsoldier/clash-rules release 分支 `gfw.txt`（`RULE-SET,gfw,手动选择` 插在 `GEOIP,CN,DIRECT` 之前，rule-provider `interval: 86400` 每日自动同步）；`gfw=false` 关闭注入。用户自建规则集名为 `gfw` 且默认开启内置时 → 400「规则集名称冲突」。
 
 ## 4. 协议链接解析映射表（internal/link 核心）
 
@@ -133,14 +134,20 @@ proxy-groups: <groups>
 proxies: <nodes>
 rules:
   - GEOIP,CN,DIRECT
-  - MATCH,手动选择
+  - MATCH,漏网之鱼
 ```
 外部 `config` 参数：支持 subconverter 风格 `.ini` 模板的**最小子集**（`[custom]` 段的 include/exclude/rename 忽略——由 URL 参数控制；仅读取分组/规则部分会复杂化，M1 不做），M1 仅支持 URL 参数方式。`config` 参数在 M1 返回 501 或忽略（设计：忽略 + warn 日志，README 注明 M2 支持）。
 
-规则注入：内置最小规则集（GEOIP,CN,DIRECT + MATCH 兜底）。选中规则集时注入
-`rule-providers` 段（http 型 provider，path `./ruleset/<规则集名>.yaml`）并把
-`RULE-SET,<规则集名>,<专属组名>` 插到规则列表**最前**（GEOIP,CN,DIRECT 之前）；
-`rule-providers` 为整体覆盖段，多规则集一次调用全部注入（严禁逐次调用互相覆盖）。
+规则注入：内置最小规则集（GEOIP,CN,DIRECT + `MATCH,漏网之鱼` 兜底，指向「漏网之鱼」
+组；该组 = `[手动选择, 地区组名..., 其他节点?, 全部节点名..., 直连, 拒绝]`）。
+选中规则集时注入 `rule-providers` 段（http 型 provider，path
+`./ruleset/<规则集名>.yaml`）并把 `RULE-SET,<规则集名>,<专属组名>` 插到规则列表
+**最前**（GEOIP,CN,DIRECT 之前）；`rule-providers` 为整体覆盖段，多规则集一次
+调用全部注入（严禁逐次调用互相覆盖）。
+内置 GFW（默认启用，`gfw=false` 关闭）：固定名 `gfw`，来源
+Loyalsoldier/clash-rules release 分支 `gfw.txt`（behavior=domain、format=yaml、
+`interval: 86400` 每日自动同步），追加到用户规则集之后、GEOIP 之前——
+`RULE-SET,gfw,手动选择`（命中被墙域名走手动选择组）。
 
 ## 7. 输出校验（internal/output）
 
@@ -280,7 +287,8 @@ api.NewServer（同一 25500 端口）
 
 - convert 请求体：`source_id`/`source_ids`（逗号分隔多值，任一 ID 不存在/禁用
   → 400，两者并存 → 400）与 `url`（临时，可 `|` 多源）可混合聚合（已存源在前、
-  url 源在后）；`include/exclude/rename` 正则、`udp/tls13/scv` 布尔、`ruleset_id`
+  url 源在后）；`include/exclude/rename` 正则、`udp/tls13/scv` 布尔、`gfw` 布尔（缺省=开，显式
+  false 才关）、`ruleset_id`
   可选（逗号分隔多值，任一规则集不存在/禁用 → 400）。规则集注入 = 把规则集 URL
   写进输出 YAML 的 `rule-providers` 并为每个规则集生成专属策略组，规则集由
   OpenClash 侧拉取，本服务不拉取不校验规则内容。
@@ -293,8 +301,8 @@ api.NewServer（同一 25500 端口）
 1. **订阅源**：表格（名称/脱敏 URL/启用开关/编辑/删除，删除需 confirm()）；
    新增/编辑共用内联表单，编辑时 URL 留空表示不变（列表只回脱敏 URL）；
    启用开关 change 即 PUT。
-2. **订阅转换**：已启用源下拉（或「临时 URL」折叠展开时禁用下拉）；
-   include/exclude/rename + scv/udp/tls13 + 规则集多选 checkbox（仅 enabled，
+2. **订阅转换**：卡片选择器多选已启用源，可与「临时 URL」混合聚合（不再互斥）；
+   include/exclude/rename + scv/udp/tls13 + GFW 规则 checkbox（默认勾选）+ 规则集多选 checkbox（仅 enabled，
    勾选结果 `join(',')` 赋 `ruleset_id`）；「预览节点」渲染节点/
    策略组滚动区与耗时；「生成订阅链接」用 `window.location.protocol` +
    `window.location.host` 拼 `/sub?target=clash&src=<id>|url=<enc>`（url 只经

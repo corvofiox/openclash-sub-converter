@@ -24,6 +24,19 @@ const ruleProviderInterval = 86400
 // defaultTargetGroup 是未指定 targetGroup 时的默认策略组名。
 const defaultTargetGroup = "手动选择"
 
+// BuiltinGFWProvider 返回内置 GFW 规则集 provider（R7）：固定名 gfw，
+// 来源 Loyalsoldier/clash-rules release 分支 gfw.txt，behavior=domain、
+// format=yaml（mihomo rule-provider 标准 payload: YAML，每日 interval 自动同步）。
+// TargetGroup 留空 → ApplyRuleProviders 回落默认「手动选择」（与用户规则集默认一致）。
+func BuiltinGFWProvider() RuleProvider {
+	return RuleProvider{
+		Name:     BuiltinGFWName,
+		URL:      BuiltinGFWURL,
+		Behavior: BuiltinGFWBehavior,
+		Format:   BuiltinGFWFormat,
+	}
+}
+
 // ValidateRuleProviderName 校验 rule-provider 名称：非空，且拒绝含 /、\、
 // 或 .. 的路径穿越名称（名称会拼进输出 YAML 的 rule-provider path，
 // 如 ./ruleset/<Name>.yaml）。

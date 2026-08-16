@@ -271,17 +271,21 @@ func TestRenderValidateRoundTrip(t *testing.T) {
 	if err := yaml.Unmarshal(data, &back); err != nil {
 		t.Fatalf("re-parse rendered yaml: %v", err)
 	}
-	// Build 自带 2 条规则（GEOIP + MATCH），注入 3 条 RULE-SET 后共 5 条，
-	// RULE-SET 完整行位于列表最前（GEOIP 之前），MATCH 仍在最后。
+	// Build 自带 3 条规则（OpenCodeRule + GEOIP + MATCH），注入 3 条 RULE-SET 后
+	// 共 6 条：OpenCodeRule 恒定 rules[0]（R8 锚点），RULE-SET 插在其后、GEOIP 之前，
+	// MATCH 仍在最后。
 	rules, ok := back["rules"].([]any)
-	if !ok || len(rules) != 5 {
-		t.Fatalf("re-parsed rules = %T len %d, want []any len 5", back["rules"], len(rules))
+	if !ok || len(rules) != 6 {
+		t.Fatalf("re-parsed rules = %T len %d, want []any len 6", back["rules"], len(rules))
 	}
-	if rules[0].(string) != "RULE-SET,cn-domains,手动选择" {
-		t.Errorf("rules[0] = %q, want RULE-SET 完整行", rules[0])
+	if rules[0].(string) != OpenCodeRule {
+		t.Errorf("rules[0] = %q, want %q（OpenCode 规则行第 1 条）", rules[0], OpenCodeRule)
 	}
-	if rules[4].(string) != "MATCH,漏网之鱼" {
-		t.Errorf("rules[4] = %q, want MATCH 在最后", rules[4])
+	if rules[1].(string) != "RULE-SET,cn-domains,手动选择" {
+		t.Errorf("rules[1] = %q, want RULE-SET 完整行（OpenCode 之后）", rules[1])
+	}
+	if rules[5].(string) != "MATCH,漏网之鱼" {
+		t.Errorf("rules[5] = %q, want MATCH 在最后", rules[5])
 	}
 }
 
@@ -370,5 +374,28 @@ func TestBuiltinGFWProvider(t *testing.T) {
 	}
 	if _, ok := empty["rule-providers"]; ok {
 		t.Error("空 rps 不应注入 rule-providers")
+	}
+}
+
+// TestOpenCodeRuleAnchor（R8 验收 A6）：rules[0] = OpenCodeRule 时 RULE-SET
+// 插在其后（OpenCode 保持第 1 条）、GEOIP 之前、MATCH 最后；rps 顺序保持。
+func TestOpenCodeRuleAnchor(t *testing.T) {
+	cfg := map[string]any{"rules": []any{OpenCodeRule, "GEOIP,CN,DIRECT", "MATCH,漏网之鱼"}}
+	if err := ApplyRuleProviders(cfg, sampleRPs()); err != nil {
+		t.Fatalf("ApplyRuleProviders: %v", err)
+	}
+	rules, ok := cfg["rules"].([]any)
+	if !ok {
+		t.Fatalf("rules = %T, want []any", cfg["rules"])
+	}
+	want := []any{
+		OpenCodeRule,
+		"RULE-SET,cn-domains,手动选择",
+		"RULE-SET,cn-ips,手动选择",
+		"GEOIP,CN,DIRECT",
+		"MATCH,漏网之鱼",
+	}
+	if !reflect.DeepEqual(rules, want) {
+		t.Errorf("rules = %v, want %v", rules, want)
 	}
 }

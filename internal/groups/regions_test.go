@@ -211,6 +211,19 @@ func TestBuildMultiSourceGroups(t *testing.T) {
 		t.Errorf("manual proxies = %v, want %v", got, wantManual)
 	}
 
+	// R8：OpenCode 组存在且顺序正确（= [手动选择, ...手动组全量]），
+	// 全局组序 = [手动选择, 自动选择, 地区组..., 其他节点?, OpenCode, 漏网之鱼, 直连, 拒绝]
+	opencode := findGroup(t, groups, GroupOpenCode)
+	wantOpenCode := append([]string{GroupManual}, wantManual...)
+	if got := proxies(opencode); !reflect.DeepEqual(got, wantOpenCode) {
+		t.Errorf("OpenCode proxies = %v, want %v", got, wantOpenCode)
+	}
+	gnames := groupNames(groups)
+	wantOrder := []string{GroupManual, GroupAuto, "香港节点", "日本节点", "澳大利亚节点", GroupOther, GroupOpenCode, GroupLeak, GroupDirect, GroupReject}
+	if !reflect.DeepEqual(gnames, wantOrder) {
+		t.Errorf("组序 = %v, want %v", gnames, wantOrder)
+	}
+
 	// GroupAuto 全量去重不变
 	auto := findGroup(t, groups, GroupAuto)
 	wantAuto := []string{"香港01", "HK-01", "🇭🇰 香港 02", "Tokyo-2", "Australia-01", "无标识节点"}

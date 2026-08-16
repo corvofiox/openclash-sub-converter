@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -124,7 +125,8 @@ type convertResult struct {
 // template（可选规则集注入 + 内置 GFW 注入）→（render=true 时）渲染+校验。
 //
 // gfw 控制内置 GFW 规则集（固定名 gfw）是否注入：true 时追加到用户规则集
-// 之后（RULE-SET,gfw,手动选择 排在用户规则集后、GEOIP 前）；用户规则集已
+// 之后（RULE-SET,gfw,手动选择 排在用户规则集后、GEOIP 前——规则列表第 1 条
+// 恒为 OpenCodeRule，见 template.ApplyRuleProviders 锚点）；用户规则集已
 // 有同名 gfw → 400「规则集名称冲突」（不静默覆盖）。
 //
 // 语义分层：结构非法的源 URL 由调用方在进入本函数前校验（400）；结构合法但
@@ -197,14 +199,16 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 	// strip=false 时 no-op。剥离后统一 uniqueName 去重并改写组 proxies 引用。
 	transform.ApplyStripEmoji(nodes, groupsList, filter.StripEmoji)
 	// R3 规则集专属策略组：必须先于 template.Build 追加到 groupsList（Build 会
-	// 把组列表固化进 cfgMap["proxy-groups"]，事后 append 不生效）。
+	// 把组列表固化进 cfgMap["proxy-groups"]，事后 append 不生效）。R8：插入位置
+	// 改为「漏网之鱼」之前（OpenCode 之后）——先收集本轮全部专属组，再统一
+	// slices.Insert 一次（勿在循环里逐个 Insert，leakIdx 会漂移）。
 	// 组 = select，proxies = [手动选择, ...手动选择组 proxies]：首位引用「手动
 	// 选择」组（用户可在专属组内跟随手动选择），其后为「手动选择」组 proxies 的
 	// 深拷贝（自动选择/地区组/其他节点/直连/拒绝等组引用，避免共享底层数组）；
-	// 组名与已有组（手动选择/自动选择/地区组/其他节点/直连/拒绝/已加规则集组）
-	// 冲突时加「(规则集)」后缀递增。RULE-SET,<规则集名>,<最终组名> 行在
-	// cfgMap 构建后由 ApplyRuleProviders 一次性注入（cfg["rule-providers"]
-	// 整体覆盖，多规则集严禁逐次调用）。
+	// 组名与已有组（手动选择/自动选择/地区组/其他节点/OpenCode/漏网之鱼/直连/
+	// 拒绝/已加规则集组）冲突时加「(规则集)」后缀递增。RULE-SET,<规则集名>,
+	// <最终组名> 行在 cfgMap 构建后由 ApplyRuleProviders 一次性注入
+	// （cfg["rule-providers"] 整体覆盖，多规则集严禁逐次调用）。
 	var rps []template.RuleProvider
 	if len(ruleSets) > 0 {
 		// P1-2：同名规则集（不同 id）会让 rule-providers map 键互相覆盖、前者
@@ -240,14 +244,15 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 		usedNames["DIRECT"] = true
 		usedNames["REJECT"] = true
 		rps = make([]template.RuleProvider, 0, len(ruleSets))
+		newGroups := make([]map[string]any, 0, len(ruleSets))
 		for _, rs := range ruleSets {
 			gname := uniqueRuleSetGroupName(rs.Name, usedNames)
 			usedNames[gname] = true
 			// 专属组 proxies = [手动选择, ...手动选择组 proxies]：首位引用「手动
-			// 选择」组（groupsList[0]，Build 保证首元素是手动选择组），用户可在
-			// 专属组内跟随手动选择；其后复制手动组 proxies（自动选择/地区组/
-			// 直连/拒绝等组引用，深拷贝避免共享底层数组）。复制在 ApplyStripEmoji
-			// 之后，节点名已是最终名。
+			// 选择」组（groupsList[0]，Build 保证首元素是手动选择组——R8 组序重排
+			// 不改变该契约），用户可在专属组内跟随手动选择；其后复制手动组 proxies
+			// （自动选择/地区组/直连/拒绝等组引用，深拷贝避免共享底层数组）。复制在
+			// ApplyStripEmoji 之后，节点名已是最终名。
 			var proxies []any
 			if len(groupsList) > 0 {
 				if src, ok := groupsList[0]["proxies"].([]any); ok {
@@ -263,7 +268,7 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 				}
 				proxies = append(proxies, groups.GroupDirect, groups.GroupReject)
 			}
-			groupsList = append(groupsList, map[string]any{
+			newGroups = append(newGroups, map[string]any{
 				"name": gname, "type": "select", "proxies": proxies,
 			})
 			rps = append(rps, template.RuleProvider{
@@ -271,6 +276,17 @@ func (s *server) runPipeline(r *http.Request, srcs []string, filter transform.Fi
 				TargetGroup: gname,
 			})
 		}
+		// R8（D4）：外部注入策略组插到「漏网之鱼」之前（OpenCode 之后、漏网之鱼
+		// 之前），多规则集相对顺序不变（一次 slices.Insert 保持 leakIdx 稳定）。
+		// 防御：groups.Build 恒生成漏网之鱼，找不到则 append 尾部（旧行为）。
+		leakIdx := len(groupsList)
+		for i, g := range groupsList {
+			if n, _ := g["name"].(string); n == groups.GroupLeak {
+				leakIdx = i
+				break
+			}
+		}
+		groupsList = slices.Insert(groupsList, leakIdx, newGroups...)
 	}
 	cfgMap, err := template.Build(nodes, groupsList, opts)
 	if err != nil {

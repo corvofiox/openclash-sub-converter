@@ -63,9 +63,8 @@ func TestBuildMixedRegions(t *testing.T) {
 		t.Errorf("manual proxies = %v, want %v", got, wantManual)
 	}
 
-	// R7：漏网之鱼组——紧跟手动选择组声明（组列表第 2 位），type=select，
-	// proxies = [手动选择, ...手动选择组 proxies[1:]]（首位引用手动选择组，
-	// 不含自动选择）。
+	// R7：漏网之鱼组——type=select，proxies = [手动选择, ...手动选择组 proxies[1:]]
+	// （首位引用手动选择组，不含自动选择）。
 	leak := findGroup(t, groups, GroupLeak)
 	if leak["type"] != "select" {
 		t.Errorf("漏网之鱼 type = %v, want select", leak["type"])
@@ -74,8 +73,21 @@ func TestBuildMixedRegions(t *testing.T) {
 	if got := proxies(leak); !reflect.DeepEqual(got, wantLeak) {
 		t.Errorf("漏网之鱼 proxies = %v, want %v", got, wantLeak)
 	}
-	if gnames := groupNames(groups); len(gnames) < 2 || gnames[1] != GroupLeak {
-		t.Errorf("漏网之鱼应在组列表第 2 位（手动选择之后），实际组序 = %v", gnames)
+	// R8：全局组序 = [手动选择, 自动选择, 地区组..., 其他节点?, OpenCode,
+	// 漏网之鱼, 直连, 拒绝]——漏网之鱼在 OpenCode 之后、直连之前。
+	gnames := groupNames(groups)
+	wantOrder := []string{GroupManual, GroupAuto, "香港节点", "日本节点", "新加坡节点", GroupOther, GroupOpenCode, GroupLeak, GroupDirect, GroupReject}
+	if !reflect.DeepEqual(gnames, wantOrder) {
+		t.Errorf("组序 = %v, want %v", gnames, wantOrder)
+	}
+	// R8：OpenCode 组 = [手动选择, ...手动组 proxies 全量]，type=select
+	opencode := findGroup(t, groups, GroupOpenCode)
+	if opencode["type"] != "select" {
+		t.Errorf("OpenCode type = %v, want select", opencode["type"])
+	}
+	wantOpenCode := append([]string{GroupManual}, wantManual...)
+	if got := proxies(opencode); !reflect.DeepEqual(got, wantOpenCode) {
+		t.Errorf("OpenCode proxies = %v, want %v", got, wantOpenCode)
 	}
 
 	auto := findGroup(t, groups, GroupAuto)
@@ -171,9 +183,10 @@ func TestBuildEmptyNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build(nil) error: %v", err)
 	}
-	// R1：无节点时也生成直连/拒绝组（用户明确要求）；R7：漏网之鱼组同样生成
-	if got := groupNames(groups); !reflect.DeepEqual(got, []string{GroupManual, GroupLeak, GroupAuto, GroupDirect, GroupReject}) {
-		t.Errorf("groups = %v, want [%s %s %s %s %s]", got, GroupManual, GroupLeak, GroupAuto, GroupDirect, GroupReject)
+	// R1：无节点时也生成直连/拒绝组（用户明确要求）；R7：漏网之鱼组同样生成；
+	// R8：OpenCode 组同样生成（组序 = [手动选择, 自动选择, OpenCode, 漏网之鱼, 直连, 拒绝]）
+	if got := groupNames(groups); !reflect.DeepEqual(got, []string{GroupManual, GroupAuto, GroupOpenCode, GroupLeak, GroupDirect, GroupReject}) {
+		t.Errorf("groups = %v, want [%s %s %s %s %s %s]", got, GroupManual, GroupAuto, GroupOpenCode, GroupLeak, GroupDirect, GroupReject)
 	}
 	manual := findGroup(t, groups, GroupManual)
 	if got := proxies(manual); !reflect.DeepEqual(got, []string{GroupAuto, GroupDirect, GroupReject}) {
@@ -183,6 +196,11 @@ func TestBuildEmptyNodes(t *testing.T) {
 	leak := findGroup(t, groups, GroupLeak)
 	if got := proxies(leak); !reflect.DeepEqual(got, []string{GroupManual, GroupDirect, GroupReject}) {
 		t.Errorf("漏网之鱼 proxies = %v, want [%s %s %s]", got, GroupManual, GroupDirect, GroupReject)
+	}
+	// A7：空节点列表 OpenCode proxies = [手动选择, 自动选择, 直连, 拒绝]
+	opencode := findGroup(t, groups, GroupOpenCode)
+	if got := proxies(opencode); !reflect.DeepEqual(got, []string{GroupManual, GroupAuto, GroupDirect, GroupReject}) {
+		t.Errorf("OpenCode proxies = %v, want [%s %s %s %s]", got, GroupManual, GroupAuto, GroupDirect, GroupReject)
 	}
 	auto := findGroup(t, groups, GroupAuto)
 	if got := proxies(auto); len(got) != 0 {
@@ -216,6 +234,11 @@ func TestBuildOnlyUnknown(t *testing.T) {
 	leak := findGroup(t, groups, GroupLeak)
 	if got := proxies(leak); !reflect.DeepEqual(got, []string{GroupManual, GroupOther, "无 emoji 节点", "🇨🇳 大陆 01", GroupDirect, GroupReject}) {
 		t.Errorf("漏网之鱼 proxies = %v, want [%s %s %s %s %s %s]", got, GroupManual, GroupOther, "无 emoji 节点", "🇨🇳 大陆 01", GroupDirect, GroupReject)
+	}
+	// R8：OpenCode = [手动选择, ...手动组全量]（含自动选择）
+	opencode := findGroup(t, groups, GroupOpenCode)
+	if got := proxies(opencode); !reflect.DeepEqual(got, []string{GroupManual, GroupAuto, GroupOther, "无 emoji 节点", "🇨🇳 大陆 01", GroupDirect, GroupReject}) {
+		t.Errorf("OpenCode proxies = %v, want [%s %s %s %s %s %s %s]", got, GroupManual, GroupAuto, GroupOther, "无 emoji 节点", "🇨🇳 大陆 01", GroupDirect, GroupReject)
 	}
 }
 
@@ -268,6 +291,12 @@ func TestBuildManualAllNodesOrder(t *testing.T) {
 	if got := proxies(leak); !reflect.DeepEqual(got, wantLeak) {
 		t.Errorf("漏网之鱼 proxies = %v, want %v", got, wantLeak)
 	}
+	// R8：OpenCode = [手动选择, ...手动组 proxies 全量]
+	opencode := findGroup(t, groups, GroupOpenCode)
+	wantOpenCode := append([]string{GroupManual}, want...)
+	if got := proxies(opencode); !reflect.DeepEqual(got, wantOpenCode) {
+		t.Errorf("OpenCode proxies = %v, want %v", got, wantOpenCode)
+	}
 	// 含不可识别节点时：其他节点组插在地区组名之后、节点名之前
 	nodes = append(nodes, node("unknown-node"))
 	groups, err = Build(nodes)
@@ -283,6 +312,11 @@ func TestBuildManualAllNodesOrder(t *testing.T) {
 	wantLeak = append([]string{GroupManual}, want[1:]...)
 	if got := proxies(leak); !reflect.DeepEqual(got, wantLeak) {
 		t.Errorf("漏网之鱼 proxies with other = %v, want %v", got, wantLeak)
+	}
+	opencode = findGroup(t, groups, GroupOpenCode)
+	wantOpenCode = append([]string{GroupManual}, want...)
+	if got := proxies(opencode); !reflect.DeepEqual(got, wantOpenCode) {
+		t.Errorf("OpenCode proxies with other = %v, want %v", got, wantOpenCode)
 	}
 }
 
@@ -308,6 +342,7 @@ func TestBuildGroupNameCollision(t *testing.T) {
 		node("手动选择"),     // 撞固定组名
 		node("漏网之鱼"),     // 撞固定组名
 		node("香港节点"),     // 撞动态地区组名（自身也归入香港地区）
+		node("OpenCode"), // 撞 R8 固定组名 → 改名（无地区线索 → 其他节点组）
 		node("🇭🇰 香港 01"), // 正常节点，不受影响
 		node("🇯🇵 日本 01"), // 正常节点，不受影响
 	}
@@ -333,7 +368,7 @@ func TestBuildGroupNameCollision(t *testing.T) {
 	for _, n := range nodes {
 		gotNames = append(gotNames, n["name"].(string))
 	}
-	wantNames := []string{"手动选择 (2)", "漏网之鱼 (2)", "香港节点 (2)", "🇭🇰 香港 01", "🇯🇵 日本 01"}
+	wantNames := []string{"手动选择 (2)", "漏网之鱼 (2)", "香港节点 (2)", "OpenCode (2)", "🇭🇰 香港 01", "🇯🇵 日本 01"}
 	if !reflect.DeepEqual(gotNames, wantNames) {
 		t.Errorf("nodes names = %v, want %v", gotNames, wantNames)
 	}
@@ -341,7 +376,7 @@ func TestBuildGroupNameCollision(t *testing.T) {
 	// 3. 各组引用与改后名一致
 	manual := findGroup(t, groups, GroupManual)
 	wantManual := []string{GroupAuto, "香港节点", "日本节点", GroupOther,
-		"手动选择 (2)", "漏网之鱼 (2)", "香港节点 (2)", "🇭🇰 香港 01", "🇯🇵 日本 01",
+		"手动选择 (2)", "漏网之鱼 (2)", "香港节点 (2)", "OpenCode (2)", "🇭🇰 香港 01", "🇯🇵 日本 01",
 		GroupDirect, GroupReject}
 	if got := proxies(manual); !reflect.DeepEqual(got, wantManual) {
 		t.Errorf("manual proxies = %v, want %v", got, wantManual)
@@ -352,7 +387,7 @@ func TestBuildGroupNameCollision(t *testing.T) {
 		t.Errorf("leak proxies = %v, want %v", got, wantLeak)
 	}
 	auto := findGroup(t, groups, GroupAuto)
-	wantAuto := []string{"手动选择 (2)", "漏网之鱼 (2)", "香港节点 (2)", "🇭🇰 香港 01", "🇯🇵 日本 01"}
+	wantAuto := []string{"手动选择 (2)", "漏网之鱼 (2)", "香港节点 (2)", "OpenCode (2)", "🇭🇰 香港 01", "🇯🇵 日本 01"}
 	if got := proxies(auto); !reflect.DeepEqual(got, wantAuto) {
 		t.Errorf("auto proxies = %v, want %v", got, wantAuto)
 	}
@@ -365,8 +400,14 @@ func TestBuildGroupNameCollision(t *testing.T) {
 		t.Errorf("日本节点 proxies = %v, want [🇯🇵 日本 01]", got)
 	}
 	other := findGroup(t, groups, GroupOther)
-	if got := proxies(other); !reflect.DeepEqual(got, []string{"手动选择 (2)", "漏网之鱼 (2)"}) {
-		t.Errorf("其他节点 proxies = %v, want [手动选择 (2) 漏网之鱼 (2)]", got)
+	if got := proxies(other); !reflect.DeepEqual(got, []string{"手动选择 (2)", "漏网之鱼 (2)", "OpenCode (2)"}) {
+		t.Errorf("其他节点 proxies = %v, want [手动选择 (2) 漏网之鱼 (2) OpenCode (2)]", got)
+	}
+	// R8：OpenCode 组引用与改名后节点名一致（= [手动选择] + 手动组全量）
+	opencode := findGroup(t, groups, GroupOpenCode)
+	wantOpenCode := append([]string{GroupManual}, wantManual...)
+	if got := proxies(opencode); !reflect.DeepEqual(got, wantOpenCode) {
+		t.Errorf("OpenCode proxies = %v, want %v", got, wantOpenCode)
 	}
 
 	// 4. 引用一致性：每个组引用要么是节点名/组名，要么是内置出站名
@@ -413,4 +454,88 @@ func TestBuildGroupNameCollisionSuffixBump(t *testing.T) {
 	if got := proxies(hk); !reflect.DeepEqual(got, []string{"香港节点 (3)", "香港节点 (2)", "🇭🇰 香港 01"}) {
 		t.Errorf("香港节点 proxies = %v", got)
 	}
+}
+
+// TestBuildGlobalOrder（R8 验收 A1）：全局组序钉死——含/不含「其他节点」两种
+// 场景：groups[0]=手动选择，其后按 [自动选择, 地区组名按出现序, 其他节点?(若有),
+// OpenCode, 漏网之鱼, 直连, 拒绝]。
+func TestBuildGlobalOrder(t *testing.T) {
+	// 场景 1：含其他节点
+	nodes := []map[string]any{
+		node("🇭🇰 香港-x"),
+		node("🇯🇵 日本-y"),
+		node("unknown-node"), // 无地区线索 → 其他节点组
+	}
+	groups, err := Build(nodes)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	wantOrder := []string{GroupManual, GroupAuto, "香港节点", "日本节点", GroupOther, GroupOpenCode, GroupLeak, GroupDirect, GroupReject}
+	if got := groupNames(groups); !reflect.DeepEqual(got, wantOrder) {
+		t.Errorf("含其他节点组序 = %v, want %v", got, wantOrder)
+	}
+	// 场景 2：不含其他节点
+	nodes = []map[string]any{
+		node("🇭🇰 香港-x"),
+		node("🇯🇵 日本-y"),
+		node("🇺🇸 美国-z"),
+	}
+	groups, err = Build(nodes)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	wantOrder = []string{GroupManual, GroupAuto, "香港节点", "日本节点", "美国节点", GroupOpenCode, GroupLeak, GroupDirect, GroupReject}
+	if got := groupNames(groups); !reflect.DeepEqual(got, wantOrder) {
+		t.Errorf("不含其他节点组序 = %v, want %v", got, wantOrder)
+	}
+}
+
+// TestBuildOpenCodeLeakIndependent（R8 验收 A4）：除漏网之鱼自身外，任何组的
+// proxies 均不含「漏网之鱼」；尤其 OpenCode 全量列表无漏网之鱼；漏网之鱼本身
+// 仍存在且内容不变（[手动选择, 地区名..., 其他?, 全节点..., 直连, 拒绝]）。
+func TestBuildOpenCodeLeakIndependent(t *testing.T) {
+	nodes := []map[string]any{
+		node("🇭🇰 香港 01"),
+		node("🇯🇵 日本 02"),
+		node("unknown-node"),
+	}
+	groups, err := Build(nodes)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	for _, g := range groups {
+		if g["name"] == GroupLeak {
+			continue
+		}
+		for _, ref := range proxies(g) {
+			if ref == GroupLeak {
+				t.Errorf("组 %v 的 proxies 不得包含漏网之鱼", g["name"])
+			}
+		}
+	}
+	// OpenCode 全量列表无漏网之鱼（且首位引用手动选择组）
+	opencode := findGroup(t, groups, GroupOpenCode)
+	oc := proxies(opencode)
+	if containsStr(oc, GroupLeak) {
+		t.Errorf("OpenCode proxies 不得包含漏网之鱼: %v", oc)
+	}
+	if len(oc) == 0 || oc[0] != GroupManual {
+		t.Errorf("OpenCode proxies 首位应为手动选择: %v", oc)
+	}
+	// 漏网之鱼自身内容不变（首位手动选择、无自动选择）
+	leak := findGroup(t, groups, GroupLeak)
+	wantLeak := []string{GroupManual, "香港节点", "日本节点", GroupOther, "🇭🇰 香港 01", "🇯🇵 日本 02", "unknown-node", GroupDirect, GroupReject}
+	if got := proxies(leak); !reflect.DeepEqual(got, wantLeak) {
+		t.Errorf("漏网之鱼 proxies = %v, want %v", got, wantLeak)
+	}
+}
+
+// containsStr 报告 xs 是否包含 s（测试辅助）。
+func containsStr(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

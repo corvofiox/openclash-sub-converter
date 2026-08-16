@@ -13,7 +13,7 @@ GET /sub?target=clash&url=...&include=&exclude=&rename=&strip_emoji=&config=
   → link.ParseSubscription（Base64 订阅 / Clash YAML 订阅 / 单链接）→ []map[string]any (Clash 条目)
   → adapter.ParseProxy 逐条校验（失败跳过+告警日志）→ 规范节点列表
   → transform.Filter + transform.Rename（正则 include/exclude/rename）
-  → groups.Build（手动选择/漏网之鱼/自动选择/地区组/直连/拒绝组）→ 规则集专属组追加（见 5）→ 内置 GFW 注入（见 6）
+  → groups.Build（手动选择/自动选择/地区组/其他节点/OpenCode/漏网之鱼/直连/拒绝组，见 5）→ 规则集专属组插入（OpenCode 后、漏网之鱼前）→ 内置 GFW 注入（见 6）
   → template.Merge（内置默认模板 / 外部 config 模板）
   → output.Render（YAML 序列化）
   → config.UnmarshalRawConfig 全量校验（失败则 500）
@@ -102,14 +102,21 @@ GET /version           → JSON {version, mihomo}
 ## 5. 策略组构建（internal/groups）
 
 ```
-[手动选择] type=select, proxies=[DIRECT, 自动选择, 各地区组...]
+全局组序（R8 定稿）：[手动选择, 自动选择, 地区组(按出现序)..., 其他节点?(若有),
+OpenCode, 漏网之鱼, 直连, 拒绝]——外部注入的规则集专属组插在 OpenCode 之后、
+漏网之鱼之前（见 6）；任何其他组的 proxies 均不含「漏网之鱼」。
+[手动选择] type=select, proxies=[自动选择, 各地区组(出现序)..., 其他节点?(若有),
+           全部去重节点名(输入序)..., 直连, 拒绝]
 [自动选择] type=url-test, url=<测速URL>, interval=300, proxies=[全部节点]
 [地区组]  按节点名识别地区（多源线索：emoji 国旗 / 中文(含繁体/城市) / 拼音 / 英文(含城市) / ISO 双字母，
            取名字中第一个地区线索；🇭🇰/香港/HK-01→香港, 🇯🇵/日本/Tokyo-2→日本, 🇸🇬/新加坡/SG-01→新加坡...），
            type=url-test, 组名「香港节点」，proxies=[该地区节点]
 [未识别地区] 无任何地区线索的节点放入「其他节点」组
-内置出站：[DIRECT] [REJECT]（Clash 内置出站，手动选择组 proxies 与 rules 中直接引用即可，
-        不生成空组声明——空组会被 mihomo 判非法：'use' or 'proxies' missing）
+[OpenCode] type=select（R8），proxies=[手动选择, ...手动选择组 proxies 全量]——
+           服务 opencode.ai 模型调用端点流量（DOMAIN-SUFFIX,opencode.ai 规则第 1 条指向它）
+[漏网之鱼] type=select（R7），proxies=[手动选择, 地区名..., 其他节点?, 全节点..., 直连, 拒绝]；
+           MATCH 兜底规则指向它
+[直连][拒绝] type=select，proxies 恰为 [DIRECT]/[REJECT]，全局最后两组（拒绝最后）
 ```
 - emoji/中文/拼音/英文/ISO 五层别名表内置常量（47 地区，含无歧义城市名），一别名只映射一地区，全局唯一性有测试强制。
 - 组名格式固定 `「<地区>节点」`（无 emoji，命名契约 v1），后续 M2 命名引擎接管。
@@ -133,17 +140,20 @@ dns:
 proxy-groups: <groups>
 proxies: <nodes>
 rules:
+  - DOMAIN-SUFFIX,opencode.ai,OpenCode   # R8：第 1 条恒在（OpenCode 组恒在场，规则永不悬空）
   - GEOIP,CN,DIRECT
   - MATCH,漏网之鱼
 ```
 外部 `config` 参数：支持 subconverter 风格 `.ini` 模板的**最小子集**（`[custom]` 段的 include/exclude/rename 忽略——由 URL 参数控制；仅读取分组/规则部分会复杂化，M1 不做），M1 仅支持 URL 参数方式。`config` 参数在 M1 返回 501 或忽略（设计：忽略 + warn 日志，README 注明 M2 支持）。
 
-规则注入：内置最小规则集（GEOIP,CN,DIRECT + `MATCH,漏网之鱼` 兜底，指向「漏网之鱼」
+规则注入：内置最小规则集 = **第 1 条 `DOMAIN-SUFFIX,opencode.ai,OpenCode`**（R8，OpenCode
+规则行恒为 rules[0]——锚点由 template.ApplyRuleProviders 保证，用户规则集/gfw 的
+RULE-SET 插在其后）+ `GEOIP,CN,DIRECT` + `MATCH,漏网之鱼` 兜底（指向「漏网之鱼」
 组；该组 = `[手动选择, 地区组名..., 其他节点?, 全部节点名..., 直连, 拒绝]`）。
 选中规则集时注入 `rule-providers` 段（http 型 provider，path
-`./ruleset/<规则集名>.yaml`）并把 `RULE-SET,<规则集名>,<专属组名>` 插到规则列表
-**最前**（GEOIP,CN,DIRECT 之前）；`rule-providers` 为整体覆盖段，多规则集一次
-调用全部注入（严禁逐次调用互相覆盖）。
+`./ruleset/<规则集名>.yaml`）并把 `RULE-SET,<规则集名>,<专属组名>` 插到
+OpenCode 规则行之后、GEOIP,CN,DIRECT 之前（**最前**语义 = OpenCode 之后）；
+`rule-providers` 为整体覆盖段，多规则集一次调用全部注入（严禁逐次调用互相覆盖）。
 内置 GFW（默认启用，`gfw=false` 关闭）：固定名 `gfw`，来源
 Loyalsoldier/clash-rules release 分支 `gfw.txt`（behavior=domain、format=yaml、
 `interval: 86400` 每日自动同步），追加到用户规则集之后、GEOIP 之前——

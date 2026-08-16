@@ -82,7 +82,7 @@ GROUPS() { awk '/^proxy-groups:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' "$1
 curl -s -o $WORK/out1.yaml -w "%{http_code}" "$BASE" > $WORK/code.txt
 check "基础转换 HTTP 200" "200" "$(cat $WORK/code.txt)"
 check "节点数 7" "7" "$(NODES $WORK/out1.yaml)"
-check "组数 11（含直连/拒绝/漏网之鱼）" "11" "$(GROUPS $WORK/out1.yaml)"
+check "组数 12（含直连/拒绝/漏网之鱼/OpenCode）" "12" "$(GROUPS $WORK/out1.yaml)"
 # R3 段序契约：proxy-groups 在 proxies 前（mihomo 对段落顺序无要求，固定顺序保证产物确定性）
 PG_LN=$(grep -n '^proxy-groups:' $WORK/out1.yaml | cut -d: -f1)
 PX_LN=$(grep -n '^proxies:' $WORK/out1.yaml | cut -d: -f1)
@@ -151,19 +151,28 @@ for l in px:
     elif l.startswith('    name: '):    # 节点条目内 name 键（4 空格）
         node_names.append(unquote(l[10:].strip()))
 
-fixed = ('手动选择', '自动选择', '漏网之鱼', '直连', '拒绝', '其他节点')
+fixed = ('手动选择', '自动选择', 'OpenCode', '漏网之鱼', '直连', '拒绝', '其他节点')
 region_names = [g for g in order if g not in fixed]
 other = '其他节点' in order
 expect_manual = ['自动选择'] + region_names + (['其他节点'] if other else []) + node_names + ['直连', '拒绝']
 # R7：漏网之鱼 = [手动选择, ...手动选择组 proxies[1:]]（首位手动选择、无自动选择）
 expect_leak = ['手动选择'] + region_names + (['其他节点'] if other else []) + node_names + ['直连', '拒绝']
+# R8：OpenCode = [手动选择, ...手动组 proxies 全量]（首位手动选择，含自动选择）
+expect_opencode = ['手动选择'] + expect_manual
+# R8：全局组序（无规则集）= [手动选择, 自动选择, 地区组..., 其他节点?, OpenCode, 漏网之鱼, 直连, 拒绝]
+expect_full = ['手动选择', '自动选择'] + region_names + (['其他节点'] if other else []) + ['OpenCode', '漏网之鱼', '直连', '拒绝']
 print('direct=%d' % (1 if by_name.get('直连') == ['DIRECT'] else 0))
 print('reject=%d' % (1 if by_name.get('拒绝') == ['REJECT'] else 0))
 print('manual_order=%d' % (1 if by_name.get('手动选择') == expect_manual else 0))
 print('manual_count=%d' % (1 if len(by_name.get('手动选择', [])) == len(expect_manual) else 0))
 print('leak=%d' % (1 if by_name.get('漏网之鱼') == expect_leak else 0))
-print('leak_pos=%d' % (1 if len(order) >= 2 and order[1] == '漏网之鱼' else 0))
-print('group_count=%d' % (1 if len(order) == 5 + len(region_names) + (1 if other else 0) else 0))
+# R8：漏网之鱼在直连/拒绝之前（全局组序倒数第 3，OpenCode 之后）
+print('leak_pos=%d' % (1 if len(order) >= 3 and order[-3] == '漏网之鱼' and order[-2] == '直连' and order[-1] == '拒绝' else 0))
+print('group_count=%d' % (1 if len(order) == 6 + len(region_names) + (1 if other else 0) else 0))
+print('opencode=%d' % (1 if by_name.get('OpenCode') == expect_opencode else 0))
+print('opencode_pos=%d' % (1 if 'OpenCode' in order and '漏网之鱼' in order and order.index('OpenCode') + 1 == order.index('漏网之鱼') else 0))
+print('order_full=%d' % (1 if order == expect_full else 0))
+print('leak_independent=%d' % (1 if all('漏网之鱼' not in (by_name.get(k) or []) for k in by_name if k != '漏网之鱼') else 0))
 # R3：附加组名检查（argv[2]）——专属组 proxies = [手动选择, ...手动选择组 proxies]
 if len(sys.argv) > 2:
     extra = sys.argv[2]
@@ -174,7 +183,7 @@ PYEOF
 GCHK=$(python3 $WORK/check_groups.py $WORK/out1.yaml)
 check "R1 直连组存在且 proxies=[DIRECT]" "1" "$(echo "$GCHK" | grep '^direct=' | cut -d= -f2)"
 check "R1 拒绝组存在且 proxies=[REJECT]" "1" "$(echo "$GCHK" | grep '^reject=' | cut -d= -f2)"
-check "R1 组数=4+地区组数+其他组(计数式)" "1" "$(echo "$GCHK" | grep '^group_count=' | cut -d= -f2)"
+check "R1 组数=6+地区组数+其他组(计数式)" "1" "$(echo "$GCHK" | grep '^group_count=' | cut -d= -f2)"
 check "R2 手动组顺序(自动→地区→节点→直连→拒绝)" "1" "$(echo "$GCHK" | grep '^manual_order=' | cut -d= -f2)"
 check "R2 手动组引用计数=地区+节点+4(计数式)" "1" "$(echo "$GCHK" | grep '^manual_count=' | cut -d= -f2)"
 
@@ -211,7 +220,8 @@ check "R7 MATCH 兜底=漏网之鱼(最后)" "1" "$([ -n "$MCH_LN" ] && [ -n "$G
 check "R7 无 MATCH,手动选择 残留" "0" "$(grep -c -- '- MATCH,手动选择' $WORK/out1.yaml)"
 # A3：漏网之鱼组构成/顺序/位置（check_groups.py 新增 leak/leak_pos 输出）
 check "R7 漏网之鱼组顺序/构成" "1" "$(echo "$GCHK" | grep '^leak=' | cut -d= -f2)"
-check "R7 漏网之鱼紧跟手动选择(组序第2)" "1" "$(echo "$GCHK" | grep '^leak_pos=' | cut -d= -f2)"
+# R8 组序重排后：漏网之鱼在 OpenCode 之后、直连/拒绝之前（全局组序倒数第 3）
+check "R8 漏网之鱼在直连/拒绝前(组序倒数第3)" "1" "$(echo "$GCHK" | grep '^leak_pos=' | cut -d= -f2)"
 # A5：gfw=false 关闭内置（无 rule-providers 段、无 RULE-SET,gfw；兜底与漏网之鱼组不变）
 curl -s -o $WORK/out_gfw_off.yaml -w "%{http_code}" "$BASE&gfw=false" > $WORK/code_gfw_off.txt
 check "R7 gfw=false /sub 200" "200" "$(cat $WORK/code_gfw_off.txt)"
@@ -235,10 +245,25 @@ GFWPL=$(python3 -c 'import json;print(json.load(open("'$WORK'/gfwpl.json"))["rul
 check "R7 规则集名=gfw + 默认GFW → 400" "400" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&ruleset_id=$GFWPL")"
 check "R7 gfw=false + 用户gfw规则集 → 200" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE&gfw=false&ruleset_id=$GFWPL")"
 
+# 4.4 R8 内置 OpenCode 策略组 + 全局组序重排 + OpenCode 规则行最前
+# A1/A2/A4：check_groups.py 新增 opencode/opencode_pos/order_full/leak_independent 输出
+check "R8 OpenCode 组 proxies 精确顺序" "1" "$(echo "$GCHK" | grep '^opencode=' | cut -d= -f2)"
+check "R8 OpenCode 紧邻漏网之鱼之前(组序)" "1" "$(echo "$GCHK" | grep '^opencode_pos=' | cut -d= -f2)"
+check "R8 全局组序(无规则集全序钉死)" "1" "$(echo "$GCHK" | grep '^order_full=' | cut -d= -f2)"
+check "R8 任何组 proxies 不含漏网之鱼" "1" "$(echo "$GCHK" | grep '^leak_independent=' | cut -d= -f2)"
+# A6：rules[0] = OpenCode 规则行（其前无任何规则行；其后 gfw → GEOIP → MATCH）
+OC_LN=$(grep -n -- '- DOMAIN-SUFFIX,opencode.ai,OpenCode' $WORK/out1.yaml | cut -d: -f1 | head -1)
+# 去前导空格后再比较（yaml 规则行缩进 2 空格，锚定首行内容）
+RULES_FIRST=$(awk '/^rules:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' $WORK/out1.yaml | sed -n 's/^ *//p' | grep -- '- ' | head -1)
+check "R8 规则第1条=DOMAIN-SUFFIX,opencode.ai,OpenCode" "1" "$([ "$RULES_FIRST" = "- DOMAIN-SUFFIX,opencode.ai,OpenCode" ] && echo 1 || echo 0)"
+check "R8 OpenCode规则→gfw→GEOIP→MATCH 顺序" "1" "$([ -n "$OC_LN" ] && [ -n "$GFW_LN" ] && [ -n "$GEO_LN" ] && [ -n "$MCH_LN" ] && [ "$OC_LN" -lt "$GFW_LN" ] && [ "$GFW_LN" -lt "$GEO_LN" ] && [ "$GEO_LN" -lt "$MCH_LN" ] && echo 1 || echo 0)"
+# A7：gfw=false 无规则集 → rules = [OpenCode, GEOIP, MATCH]（OpenCode 规则恒在场）
+check "R8 gfw=false OpenCode 规则行存在" "1" "$([ "$(grep -c -- '- DOMAIN-SUFFIX,opencode.ai,OpenCode' $WORK/out_gfw_off.yaml)" -ge 1 ] && echo 1 || echo 0)"
+
 # 5. 参数
 check "include=日本 剩2节点" "2" "$(curl -s "$BASE&include=%E6%97%A5%E6%9C%AC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
 check "exclude=日本 剩5节点" "5" "$(curl -s "$BASE&exclude=%E6%97%A5%E6%9C%AC" | awk '/^proxies:/{f=1;next} /^[a-z][a-z0-9-]*:/{if(f)exit} f' | grep -c ' name:')"
-check "rename 生效(2节点×5处,含漏网之鱼)" "10" "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP" | grep -c 'JP0')"
+check "rename 生效(2节点×6处,含OpenCode与漏网之鱼)" "12" "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP" | grep -c 'JP0')"
 # R1 rename 多规则（逗号分隔顺序执行）：日本→JP 与 香港→HK 各自命中（计数 ≥1）
 check "rename 多规则 JP0≥1" "1" "$([ "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP,%E9%A6%99%E6%B8%AF/HK" | grep -c 'JP0')" -ge 1 ] && echo 1 || echo 0)"
 check "rename 多规则 HK0≥1" "1" "$([ "$(curl -s "$BASE&rename=%E6%97%A5%E6%9C%AC/JP,%E9%A6%99%E6%B8%AF/HK" | grep -c 'HK0')" -ge 1 ] && echo 1 || echo 0)"
@@ -381,6 +406,11 @@ MCH_LN=$(grep -n -- '- MATCH,漏网之鱼' $WORK/out_tpl1.yaml | cut -d: -f1 | h
 GFW_LN=$(grep -n -- '- RULE-SET,gfw,手动选择' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
 check "R3 RULE-SET,Netflix,Netflix 在 GEOIP/MATCH 前" "1" "$([ -n "$RS_LN" ] && [ -n "$GEO_LN" ] && [ -n "$MCH_LN" ] && [ "$RS_LN" -lt "$GEO_LN" ] && [ "$RS_LN" -lt "$MCH_LN" ] && echo 1 || echo 0)"
 check "R7 gfw 在用户规则集后、GEOIP 前" "1" "$([ -n "$RS_LN" ] && [ -n "$GFW_LN" ] && [ -n "$GEO_LN" ] && [ "$RS_LN" -lt "$GFW_LN" ] && [ "$GFW_LN" -lt "$GEO_LN" ] && echo 1 || echo 0)"
+# R8（A3）：专属组插在 OpenCode 之后、漏网之鱼之前（grep 用完整锚点防 proxies 误计）
+OC_LN=$(grep -n -- '- name: OpenCode' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
+LEAK_LN=$(grep -n -- '- name: 漏网之鱼' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
+TPL_LN=$(grep -n -- '- name: Netflix' $WORK/out_tpl1.yaml | cut -d: -f1 | head -1)
+check "R8 专属组在OpenCode后、漏网之鱼前(tpl1)" "1" "$([ -n "$TPL_LN" ] && [ -n "$OC_LN" ] && [ -n "$LEAK_LN" ] && [ "$OC_LN" -lt "$TPL_LN" ] && [ "$TPL_LN" -lt "$LEAK_LN" ] && echo 1 || echo 0)"
 
 # 双规则集（逗号分隔）：两个专属组 + 两条 RULE-SET + rule-providers 2 条
 curl -s -o $WORK/out_tpl2.yaml -w "%{http_code}" "$BASE&ruleset_id=$TPL1,$TPL2" > $WORK/code_tpl2.txt
@@ -391,6 +421,12 @@ check "R4 rule-providers 3 条(双规则集+gfw)" "3" "$(grep -c 'path: ./rulese
 check "R4 RULE-SET 3 条(双规则集+gfw)" "3" "$(grep -c -- '- RULE-SET,' $WORK/out_tpl2.yaml)"
 check "R4 专属组 proxies=[手动选择,...手动组] Netflix" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml Netflix | grep '^extra=' | cut -d= -f2)"
 check "R4 专属组 proxies=[手动选择,...手动组] YouTube" "1" "$(python3 $WORK/check_groups.py $WORK/out_tpl2.yaml YouTube | grep '^extra=' | cut -d= -f2)"
+# R8（A3）：多规则集相对顺序保持：OpenCode < Netflix < YouTube < 漏网之鱼
+OC2_LN=$(grep -n -- '- name: OpenCode' $WORK/out_tpl2.yaml | cut -d: -f1 | head -1)
+NF2_LN=$(grep -n -- '- name: Netflix' $WORK/out_tpl2.yaml | cut -d: -f1 | head -1)
+YT2_LN=$(grep -n -- '- name: YouTube' $WORK/out_tpl2.yaml | cut -d: -f1 | head -1)
+LK2_LN=$(grep -n -- '- name: 漏网之鱼' $WORK/out_tpl2.yaml | cut -d: -f1 | head -1)
+check "R8 双规则集组序 OpenCode<Netflix<YouTube<漏网之鱼" "1" "$([ -n "$OC2_LN" ] && [ -n "$NF2_LN" ] && [ -n "$YT2_LN" ] && [ -n "$LK2_LN" ] && [ "$OC2_LN" -lt "$NF2_LN" ] && [ "$NF2_LN" -lt "$YT2_LN" ] && [ "$YT2_LN" -lt "$LK2_LN" ] && echo 1 || echo 0)"
 
 # 7.9 修复轮回归：同名规则集 400（P1-2）/ 规则集名撞内置出站名（P1-1）/
 # 重复 ruleset_id 去重（P2-2）/ 规则集名含逗号换行 400（P2-1）

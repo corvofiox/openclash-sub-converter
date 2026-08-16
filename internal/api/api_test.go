@@ -221,13 +221,13 @@ func TestSubSuccess(t *testing.T) {
 	if !groupNames["手动选择"] || !groupNames["香港节点"] || !groupNames["日本节点"] {
 		t.Errorf("proxy group names = %v, want 手动选择 / 香港节点 / 日本节点", groupNames)
 	}
-	// 规则注入
+	// 规则注入（R8：OpenCode 规则恒为第 1 条，其后为内置 gfw → GEOIP → MATCH）
 	rules, ok := cfg["rules"].([]any)
-	if !ok || len(rules) != 3 {
-		t.Fatalf("rules = %T %v, want 3 entries（含内置 gfw）", cfg["rules"], cfg["rules"])
+	if !ok || len(rules) != 4 {
+		t.Fatalf("rules = %T %v, want 4 entries（OpenCode + 内置 gfw）", cfg["rules"], cfg["rules"])
 	}
-	if rules[0] != "RULE-SET,gfw,手动选择" || rules[1] != "GEOIP,CN,DIRECT" || rules[2] != "MATCH,漏网之鱼" {
-		t.Errorf("rules = %v, want [RULE-SET,gfw,手动选择 GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
+	if rules[0] != "DOMAIN-SUFFIX,opencode.ai,OpenCode" || rules[1] != "RULE-SET,gfw,手动选择" || rules[2] != "GEOIP,CN,DIRECT" || rules[3] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [DOMAIN-SUFFIX,opencode.ai,OpenCode RULE-SET,gfw,手动选择 GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
 	}
 	// A1：rule-providers.gfw 字段契约（url/behavior/format/interval）
 	rps2, _ := cfg["rule-providers"].(map[string]any)
@@ -530,13 +530,13 @@ func TestSubStripEmoji(t *testing.T) {
 		}
 	}
 
-	// rules：内置 gfw 规则集 → GEOIP,CN,DIRECT → MATCH 兜底指向漏网之鱼
+	// rules（R8）：OpenCode 规则第 1 条 → 内置 gfw 规则集 → GEOIP → MATCH 兜底漏网之鱼
 	rules, ok := cfg["rules"].([]any)
-	if !ok || len(rules) != 3 {
-		t.Fatalf("rules = %T %v, want 3 entries（含内置 gfw）", cfg["rules"], cfg["rules"])
+	if !ok || len(rules) != 4 {
+		t.Fatalf("rules = %T %v, want 4 entries（OpenCode + 内置 gfw）", cfg["rules"], cfg["rules"])
 	}
-	if rules[0] != "RULE-SET,gfw,手动选择" || rules[1] != "GEOIP,CN,DIRECT" || rules[2] != "MATCH,漏网之鱼" {
-		t.Errorf("rules = %v, want [RULE-SET,gfw,手动选择 GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
+	if rules[0] != "DOMAIN-SUFFIX,opencode.ai,OpenCode" || rules[1] != "RULE-SET,gfw,手动选择" || rules[2] != "GEOIP,CN,DIRECT" || rules[3] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [DOMAIN-SUFFIX,opencode.ai,OpenCode RULE-SET,gfw,手动选择 GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
 	}
 }
 
@@ -1558,7 +1558,7 @@ func TestSubGFWDefault(t *testing.T) {
 }
 
 // TestSubGFWOff（R7 A5）：gfw=false（/sub query）不注入 gfw——无 rule-providers
-// 段、无 RULE-SET,gfw 行；规则列表回到 [GEOIP,CN,DIRECT, MATCH,漏网之鱼]。
+// 段、无 RULE-SET,gfw 行；规则列表回到 [DOMAIN-SUFFIX,opencode.ai,OpenCode, GEOIP,CN,DIRECT, MATCH,漏网之鱼]。
 func TestSubGFWOff(t *testing.T) {
 	h := newTestServer(t)
 	src := fakeSource(t, http.StatusOK, subBody())
@@ -1574,8 +1574,8 @@ func TestSubGFWOff(t *testing.T) {
 		t.Errorf("gfw=false 不应有 rule-providers 段：%v", cfg["rule-providers"])
 	}
 	rules, _ := cfg["rules"].([]any)
-	if len(rules) != 2 || rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,漏网之鱼" {
-		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
+	if len(rules) != 3 || rules[0] != "DOMAIN-SUFFIX,opencode.ai,OpenCode" || rules[1] != "GEOIP,CN,DIRECT" || rules[2] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [DOMAIN-SUFFIX,opencode.ai,OpenCode GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
 	}
 }
 
@@ -1643,8 +1643,8 @@ func TestConvertGFWOff(t *testing.T) {
 	if _, ok := cfg["rule-providers"]; ok {
 		t.Errorf("gfw=false 不应有 rule-providers: %v", cfg["rule-providers"])
 	}
-	if rules, _ := cfg["rules"].([]any); len(rules) != 2 || rules[1] != "MATCH,漏网之鱼" {
-		t.Errorf("rules = %v, want [GEOIP MATCH,漏网之鱼]", cfg["rules"])
+	if rules, _ := cfg["rules"].([]any); len(rules) != 3 || rules[0] != "DOMAIN-SUFFIX,opencode.ai,OpenCode" || rules[2] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [OpenCode GEOIP MATCH,漏网之鱼]", cfg["rules"])
 	}
 	// preview 带 gfw:false 200（开关不影响 preview 自身）
 	rec = doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"url":%q,"gfw":false}`, src.URL), nil)
@@ -1718,5 +1718,229 @@ func TestLogRetryGFWBackfill(t *testing.T) {
 	}
 	if v, _ := st.ListLogs(10)[0].Params["gfw"].(bool); v != false {
 		t.Errorf("新日志 params gfw = %v, want false（显式值保留）", st.ListLogs(10)[0].Params["gfw"])
+	}
+}
+
+// ---------- R8：内置 OpenCode 策略组 + 全局组序重排 + OpenCode 规则行最前 ----------
+
+// TestSubOpenCode（R8 验收 A1/A2/A4/A6）：/sub 产物——OpenCode 组存在、
+// type=select、proxies 精确 = [手动选择, 自动选择, <地区组名...>, <全部去重节点名...>,
+// 直连, 拒绝]；全局组序 = [手动选择, 自动选择, 地区组..., OpenCode, 漏网之鱼,
+// 直连, 拒绝]；任何组（除漏网之鱼自身）proxies 不含漏网之鱼；rules[0] =
+// DOMAIN-SUFFIX,opencode.ai,OpenCode。
+func TestSubOpenCode(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody()) // 🇭🇰 香港-01 / 🇯🇵 日本-01
+	rec := do(h, subQuery(src.URL, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	groups, _ := cfg["proxy-groups"].([]any)
+	// A2：OpenCode 组存在、type=select、proxies 精确 = [手动选择, ...手动组全量]
+	oc := findGroupByName(t, groups, "OpenCode")
+	if oc["type"] != "select" {
+		t.Errorf("OpenCode type = %v, want select", oc["type"])
+	}
+	manual := findGroupByName(t, groups, "手动选择")
+	mp := manual["proxies"].([]any)
+	ocp := oc["proxies"].([]any)
+	wantOC := append([]any{"手动选择"}, mp...)
+	if !reflect.DeepEqual(ocp, wantOC) {
+		t.Errorf("OpenCode proxies = %v, want [手动选择]+手动组全量 %v", ocp, wantOC)
+	}
+	// A1：全局组序 = [手动选择, 自动选择, 地区组..., OpenCode, 漏网之鱼, 直连, 拒绝]
+	var order []string
+	for _, g := range groups {
+		order = append(order, g.(map[string]any)["name"].(string))
+	}
+	wantOrder := []string{"手动选择", "自动选择", "香港节点", "日本节点", "OpenCode", "漏网之鱼", "直连", "拒绝"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Errorf("全局组序 = %v, want %v", order, wantOrder)
+	}
+	// A4：任何组（除漏网之鱼自身）proxies 不含漏网之鱼；尤其 OpenCode 全量列表无漏网之鱼
+	for _, g := range groups {
+		m := g.(map[string]any)
+		if m["name"] == "漏网之鱼" {
+			continue
+		}
+		refs, _ := m["proxies"].([]any)
+		for _, ref := range refs {
+			if ref == "漏网之鱼" {
+				t.Errorf("组 %v proxies 不得包含漏网之鱼", m["name"])
+			}
+		}
+	}
+	// A6：rules[0] = OpenCode 规则行（其前无任何规则行），gfw 第 2 条、MATCH 最后
+	rules, _ := cfg["rules"].([]any)
+	if len(rules) != 4 || rules[0] != "DOMAIN-SUFFIX,opencode.ai,OpenCode" {
+		t.Errorf("rules = %v, want len 4 且 rules[0]=DOMAIN-SUFFIX,opencode.ai,OpenCode", rules)
+	}
+	if rules[1] != "RULE-SET,gfw,手动选择" || rules[2] != "GEOIP,CN,DIRECT" || rules[3] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [OpenCode RULE-SET,gfw,手动选择 GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
+	}
+}
+
+// TestSubOpenCodeExternalOrder（R8 验收 A3）：带 ruleset_id 产物——规则集专属组
+// 插在 OpenCode 之后、漏网之鱼之前；多规则集保持相对顺序；专属组 proxies 内容
+// 不变（[手动选择, ...手动选择组 proxies]）；preview JSON 组序同断言。
+func TestSubOpenCodeExternalOrder(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody())
+	t1 := createRuleSetViaAPI(t, h, "Netflix", "https://x.example.com/nf.yaml", "domain", "yaml")
+	t2 := createRuleSetViaAPI(t, h, "YouTube", "https://x.example.com/yt.txt", "classical", "text")
+	ids := t1["id"].(string) + "," + t2["id"].(string)
+
+	assertOrder := func(gs []any) {
+		t.Helper()
+		var order []string
+		for _, g := range gs {
+			order = append(order, g.(map[string]any)["name"].(string))
+		}
+		wantOrder := []string{"手动选择", "自动选择", "香港节点", "日本节点", "OpenCode", "Netflix", "YouTube", "漏网之鱼", "直连", "拒绝"}
+		if !reflect.DeepEqual(order, wantOrder) {
+			t.Errorf("带规则集组序 = %v, want %v", order, wantOrder)
+		}
+		// 专属组 proxies 内容不变（A3：[手动选择, ...手动选择组 proxies]）
+		m := findGroupByName(t, gs, "手动选择")["proxies"].([]any)
+		for _, name := range []string{"Netflix", "YouTube"} {
+			np := findGroupByName(t, gs, name)["proxies"].([]any)
+			if len(np) != len(m)+1 || np[0] != "手动选择" || !reflect.DeepEqual(np[1:], m) {
+				t.Errorf("%s proxies = %v, want [手动选择]+手动组全量 %v", name, np, m)
+			}
+		}
+	}
+
+	// /sub 产物（yaml）
+	rec := do(h, subQuery(src.URL, map[string]string{"ruleset_id": ids}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	assertOrder(cfg["proxy-groups"].([]any))
+	// rules：OpenCode 第 1 条 → 用户 RULE-SET（按 ruleset_id 顺序）→ gfw → GEOIP → MATCH
+	rules, _ := cfg["rules"].([]any)
+	wantRules := []any{
+		"DOMAIN-SUFFIX,opencode.ai,OpenCode",
+		"RULE-SET,Netflix,Netflix",
+		"RULE-SET,YouTube,YouTube",
+		"RULE-SET,gfw,手动选择",
+		"GEOIP,CN,DIRECT",
+		"MATCH,漏网之鱼",
+	}
+	if !reflect.DeepEqual(rules, wantRules) {
+		t.Errorf("rules = %v, want %v", rules, wantRules)
+	}
+
+	// preview JSON 组序同断言（A3）
+	preview := doJSON(h, http.MethodPost, "/api/v1/convert/preview", fmt.Sprintf(`{"url":%q,"ruleset_id":%q}`, src.URL, ids), nil)
+	if preview.Code != http.StatusOK {
+		t.Fatalf("preview status = %d; body=%s", preview.Code, preview.Body.String())
+	}
+	var pv struct {
+		Groups []map[string]any `json:"groups"`
+	}
+	if err := json.Unmarshal(preview.Body.Bytes(), &pv); err != nil {
+		t.Fatalf("preview body not json: %v", err)
+	}
+	var pvOrder []string
+	for _, g := range pv.Groups {
+		pvOrder = append(pvOrder, g["name"].(string))
+	}
+	wantPV := []string{"手动选择", "自动选择", "香港节点", "日本节点", "OpenCode", "Netflix", "YouTube", "漏网之鱼", "直连", "拒绝"}
+	if !reflect.DeepEqual(pvOrder, wantPV) {
+		t.Errorf("preview 组序 = %v, want %v", pvOrder, wantPV)
+	}
+}
+
+// TestSubRuleSetNameOpenCodeCollision（R8 A8 专属钉死）：规则集名恰为 OpenCode，与内置
+// OpenCode 策略组撞名 → 专属组名「OpenCode(规则集)」。输出恰有两个含 OpenCode 的组——
+// 内置 OpenCode（RULE-SET 行 DOMAIN-SUFFIX,opencode.ai,OpenCode 指向它）与专属组
+// OpenCode(规则集)（RULE-SET,OpenCode,OpenCode(规则集) 指向它）；专属组插在 OpenCode
+// 之后、漏网之鱼之前，proxies = [手动选择, ...手动组全量]；规则序 =
+// [OpenCode 规则, 用户 RULE-SET, gfw, GEOIP, MATCH]。
+func TestSubRuleSetNameOpenCodeCollision(t *testing.T) {
+	h := newTestServer(t)
+	src := fakeSource(t, http.StatusOK, subBody()) // 🇭🇰 香港-01 / 🇯🇵 日本-01
+	tpl := createRuleSetViaAPI(t, h, "OpenCode", "https://x.example.com/oc.yaml", "domain", "yaml")
+	rec := do(h, subQuery(src.URL, map[string]string{"ruleset_id": tpl["id"].(string)}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("response is not valid yaml: %v", err)
+	}
+	// A8：撞内置组名 → 专属组名 = OpenCode(规则集)；输出恰有两个含 OpenCode 的组
+	groups, _ := cfg["proxy-groups"].([]any)
+	builtin := findGroupByName(t, groups, "OpenCode")    // 内置 R8 组（RULE-SET 行指向它）
+	dedup := findGroupByName(t, groups, "OpenCode(规则集)") // 专属组
+	n := 0
+	for _, g := range groups {
+		if name, ok := g.(map[string]any)["name"].(string); ok && strings.HasPrefix(name, "OpenCode") {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("含 OpenCode 的组数量 = %d, want 2（内置 OpenCode + OpenCode(规则集)）：%v", n, groups)
+	}
+	// 专属组 proxies 结构不变（A3：[手动选择, ...手动选择组 proxies]）
+	manual := findGroupByName(t, groups, "手动选择")
+	mp := manual["proxies"].([]any)
+	np := dedup["proxies"].([]any)
+	if len(np) != len(mp)+1 || np[0] != "手动选择" || !reflect.DeepEqual(np[1:], mp) {
+		t.Errorf("OpenCode(规则集) proxies = %v, want [手动选择]+手动组全量 %v", np, mp)
+	}
+	// 专属组插在 OpenCode 之后、漏网之鱼之前（与自制组不同名，无需递增后缀）
+	var order []string
+	for _, g := range groups {
+		order = append(order, g.(map[string]any)["name"].(string))
+	}
+	ocIdx, dedupIdx, leakIdx := -1, -1, -1
+	for i, name := range order {
+		switch name {
+		case "OpenCode":
+			ocIdx = i
+		case "OpenCode(规则集)":
+			dedupIdx = i
+		case "漏网之鱼":
+			leakIdx = i
+		}
+	}
+	if ocIdx < 0 || dedupIdx != ocIdx+1 || dedupIdx > leakIdx {
+		t.Errorf("组序 = %v, want OpenCode(规则集) 紧接 OpenCode 之后且先于漏网之鱼", order)
+	}
+	// 内置 OpenCode 规则行 + 用户 RULE-SET,OpenCode,OpenCode(规则集) 均可解析指向对应组
+	rules, _ := cfg["rules"].([]any)
+	wantRules := []any{
+		"DOMAIN-SUFFIX,opencode.ai,OpenCode",
+		"RULE-SET,OpenCode,OpenCode(规则集)",
+		"RULE-SET,gfw,手动选择",
+		"GEOIP,CN,DIRECT",
+		"MATCH,漏网之鱼",
+	}
+	if !reflect.DeepEqual(rules, wantRules) {
+		t.Errorf("rules = %v, want %v", rules, wantRules)
+	}
+	if idx := findRuleSetIndex(rules, "DOMAIN-SUFFIX,opencode.ai,OpenCode"); idx != 0 {
+		t.Errorf("内置 OpenCode 规则行 idx = %d, want 0（最前）：%v", idx, rules)
+	}
+	if idx := findRuleSetIndex(rules, "RULE-SET,OpenCode,OpenCode(规则集)"); idx < 0 {
+		t.Errorf("rules 缺 RULE-SET,OpenCode,OpenCode(规则集)：%v", rules)
+	}
+	// user 规则集引用与内置组之间无串扰：内置组 proxies 不因撞名变化
+	if _, ok := builtin["proxies"]; !ok {
+		t.Errorf("内置 OpenCode 组缺 proxies 字段：%v", builtin)
+	}
+	// rule-providers：用户 OpenCode 规则集 + 内置 gfw 并存（键名各自独立）
+	rps, _ := cfg["rule-providers"].(map[string]any)
+	if len(rps) != 2 || rps["OpenCode"] == nil || rps["gfw"] == nil {
+		t.Errorf("rule-providers = %v, want {OpenCode 用户规则集, gfw 内置} 两条", rps)
 	}
 }

@@ -70,9 +70,11 @@ func hasControlChar(s string) bool {
 }
 
 // ApplyRuleProviders 将 rule-providers 段注入 Build 返回的完整配置 map，并在
-// cfg["rules"]（[]any，元素为 string）的最前面按 rps 顺序插入
-// RULE-SET,<rp.Name>,<rp.TargetGroup>（位于 GEOIP,CN,DIRECT 之前，保证规则集
-// 流量优先匹配，不被国内直连规则先行截断）。
+// cfg["rules"]（[]any，元素为 string）中按 rps 顺序插入
+// RULE-SET,<rp.Name>,<rp.TargetGroup>。插入位置（R8 锚点）：若规则列表第 1 条是
+// OpenCodeRule（生产路径 = template.Build 产物恒如此），RULE-SET 插在其后、
+// GEOIP,CN,DIRECT 之前（OpenCode 规则保持第 1 条）；否则插到列表最前（baseRulesCfg
+// 等直接构造的 rules 用例，规则集流量优先匹配、不被国内直连规则先行截断）。
 //
 //   - rps 为空 → 直接返回 nil（no-op，cfg 原样）。
 //   - 每个 rp 的 TargetGroup 为空串时用默认值「手动选择」。
@@ -125,11 +127,17 @@ func ApplyRuleProviders(cfg map[string]any, rps []RuleProvider) error {
 		return fmt.Errorf("cfg[\"rules\"] 类型必须为 []any，实际为 %T", rulesAny)
 	}
 
-	// RULE-SET 统一插到规则列表最前面（在 GEOIP,CN,DIRECT 之前），
-	// 多条保持 rps 顺序；无 MATCH 行同样插最前。
+	// R8 锚点：OpenCode 规则行（template.Build 产物恒为 rules[0]）必须保持第 1 条，
+	// RULE-SET 插在其后、GEOIP 之前；baseRulesCfg 系用例（rules[0] 非 OpenCodeRule）
+	// 走原语义——插到列表最前（在 GEOIP,CN,DIRECT 之前），多条保持 rps 顺序。
+	anchor := 0
+	if len(rules) > 0 && rules[0] == OpenCodeRule {
+		anchor = 1
+	}
 	out := make([]any, 0, len(rules)+len(ruleSets))
+	out = append(out, rules[:anchor]...)
 	out = append(out, ruleSets...)
-	out = append(out, rules...)
+	out = append(out, rules[anchor:]...)
 	cfg["rules"] = out
 	return nil
 }

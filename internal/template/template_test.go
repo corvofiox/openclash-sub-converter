@@ -3,6 +3,8 @@ package template
 import (
 	"reflect"
 	"testing"
+
+	"github.com/yangyu/openclash-sub-converter/internal/groups"
 )
 
 // testGroups 是 Build 测试用的最小策略组列表。
@@ -79,13 +81,13 @@ func TestBuildBasic(t *testing.T) {
 		t.Fatalf("proxy-groups = %T len=%d, want []map[string]any len 3", cfg["proxy-groups"], len(groups))
 	}
 
-	// rules
+	// rules（R8）：OpenCodeRule 第 1 条 → GEOIP,CN,DIRECT → MATCH 兜底漏网之鱼
 	rules, ok := cfg["rules"].([]any)
-	if !ok || len(rules) != 2 {
-		t.Fatalf("rules = %T %v", cfg["rules"], cfg["rules"])
+	if !ok || len(rules) != 3 {
+		t.Fatalf("rules = %T %v, want 3 entries", cfg["rules"], cfg["rules"])
 	}
-	if rules[0] != "GEOIP,CN,DIRECT" || rules[1] != "MATCH,漏网之鱼" {
-		t.Errorf("rules = %v, want [GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules)
+	if rules[0] != OpenCodeRule || rules[1] != "GEOIP,CN,DIRECT" || rules[2] != "MATCH,漏网之鱼" {
+		t.Errorf("rules = %v, want [%s GEOIP,CN,DIRECT MATCH,漏网之鱼]", rules, OpenCodeRule)
 	}
 
 	// 默认选项下不新增任何字段
@@ -218,5 +220,13 @@ func TestBuiltinGFWConstants(t *testing.T) {
 	// 兜底规则行指向「漏网之鱼」组（R7 A2）
 	if FinalRule != "MATCH,漏网之鱼" {
 		t.Errorf("FinalRule = %q, want MATCH,漏网之鱼", FinalRule)
+	}
+	// R8：OpenCodeRule 契约——规则行第 1 条 + 跨包一致性（组名与 groups.GroupOpenCode
+	// 同步，防漂移；OpenCode 规则须指向存在的组，否则 mihomo 拒绝加载）
+	if OpenCodeRule != "DOMAIN-SUFFIX,opencode.ai,OpenCode" {
+		t.Errorf("OpenCodeRule = %q, want DOMAIN-SUFFIX,opencode.ai,OpenCode", OpenCodeRule)
+	}
+	if OpenCodeRule != "DOMAIN-SUFFIX,opencode.ai,"+groups.GroupOpenCode {
+		t.Errorf("OpenCodeRule = %q 与 groups.GroupOpenCode = %q 不一致", OpenCodeRule, groups.GroupOpenCode)
 	}
 }

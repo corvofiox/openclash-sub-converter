@@ -44,7 +44,7 @@ go run ./cmd/server            # 读取 ./config/config.yaml（缺失则用默�
 版本信息。返回 `200` + JSON：
 
 ```json
-{"version":"0.4.0","mihomo":"v1.19.29"}
+{"version":"0.5.0","mihomo":"v1.19.29"}
 ```
 
 ### `GET /sub` — 订阅转换（兼容 subconverter 调用习惯）
